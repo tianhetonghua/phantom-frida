@@ -43,6 +43,10 @@ def get_source_patches(name: str, cap_name: str) -> list[tuple[str, str]]:
         ("re.frida.helper", f"re.{name}.helper"),
         ("re.frida.Gadget", f"re.{name}.Gadget"),
         ("package re.frida;", f"package re.{name};"),
+  # --- JNI find_class uses slash-separated paths, not dot-separated ---            
+  # linux-host-session.vala calls find_class("re/frida/HelperBackend")              
+  # which is NOT caught by the dot-form patches above.      
+        ("re/frida/HelperBackend", f"re/{name}/HelperBackend"),  
 
         # --- D-Bus / service identifier ---
         ("re.frida.server", f"re.{name}.server"),
