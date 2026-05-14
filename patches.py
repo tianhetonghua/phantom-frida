@@ -69,6 +69,12 @@ def get_source_patches(name: str, cap_name: str) -> list[tuple[str, str]]:
         ("'FridaAgent'", f"'{cap_name}Agent'"),
         ('"FridaAgent"', f'"{cap_name}Agent"'),
 
+
+              # --- Gadget worker thread name (visible in /proc/pid/task/tid/comm) ---
+        # Source: lib/gadget/gadget-glue.c: g_thread_new("frida-gadget", ...)
+        ('"frida-gadget"', f'"{name}-gadget"'),
+        ("'frida-gadget'", f"'{name}-gadget'"),
+        ("frida-gadget-", f"{name}-gadget-"),
         # --- JS engine thread name (visible in /proc/pid/task/tid/status) ---
         ('"gum-js-loop"', f'"{name}-js-loop"'),
 
