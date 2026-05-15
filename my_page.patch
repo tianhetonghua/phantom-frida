@@ -15,7 +15,7 @@ index 5a85d6db..76c4e076 100644
    if (gum_exceptor_try (exceptor, &scope))
    {
 diff --git a/gum/backend-linux/gummemory-linux.c b/gum/backend-linux/gummemory-linux.c
-index 80c70d78..f5c5b747 100644
+index 80c70d78..9c55f7cb 100644
 --- a/gum/backend-linux/gummemory-linux.c
 +++ b/gum/backend-linux/gummemory-linux.c
 @@ -20,6 +20,9 @@
@@ -39,21 +39,29 @@ index 80c70d78..f5c5b747 100644
  
  static gssize gum_libc_process_vm_readv (pid_t pid, const struct iovec * local,
      gulong num_local, const struct iovec * remote, gulong num_remote,
-@@ -203,6 +206,36 @@ gum_memory_write (gpointer address,
+@@ -203,6 +206,45 @@ gum_memory_write (gpointer address,
    return success;
  }
  
 +gsize
 +gum_get_memory_region_size (gpointer* address)
 +{
-+  //return 0x1000;
++  static gpointer cache_start = NULL;
++  static gpointer cache_end = NULL;
++
 +  gpointer real_address = *address;
-+  __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p",real_address);
++
++  if (real_address >= cache_start && real_address < cache_end)
++  {
++    *address = cache_start;
++    return (gsize) (cache_end - cache_start);
++  }
++
 +  GumProcMapsIter iter;
 +  const gchar * line;
 +  gum_proc_maps_iter_init_for_self (&iter);
 +  gsize result = 0;
-+  
++
 +  while (gum_proc_maps_iter_next (&iter, &line))
 +  {
 +    gpointer start, end;
@@ -62,9 +70,10 @@ index 80c70d78..f5c5b747 100644
 +      break;
 +    else if (real_address >= start && real_address < end)
 +    {
-+      result = end - start;
++      result = (gsize) (end - start);
 +      *address = start;
-+      __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p-%p %p",start,end,result);
++      cache_start = start;
++      cache_end = end;
 +      break;
 +    }
 +  }
@@ -76,7 +85,7 @@ index 80c70d78..f5c5b747 100644
  gboolean
  gum_memory_can_remap_writable (void)
  {
-@@ -277,7 +310,7 @@ gum_clear_cache (gpointer address,
+@@ -277,7 +319,7 @@ gum_clear_cache (gpointer address,
    VALGRIND_DISCARD_TRANSLATIONS (address, size);
  }
  
