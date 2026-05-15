@@ -394,6 +394,18 @@ def rebuild_helper_dex(frida_dir: Path, custom_name: str):
         log("  classes.dex not generated, keeping pre-compiled DEX", "WARN")
 
 
+def apply_page_patch(frida_dir: Path):
+    """Apply page_patch to frida-gum (Android page permission fix)."""
+    patch_file = Path(__file__).parent / "my_page.patch"
+    if not patch_file.exists():
+        log("my_page.patch not found, skipping", "WARN")
+        return
+    log("Applying my_page.patch to frida-gum...", "STEP")
+    gum_dir = frida_dir / "subprojects" / "frida-gum"
+    run(f"git apply {patch_file}", cwd=str(gum_dir))
+    log("my_page.patch applied", "OK")
+
+
 def apply_source_patches(frida_dir: Path, custom_name: str):
     """Apply global recursive string replacements across the source tree."""
     log("=" * 60, "HEADER")
@@ -916,6 +928,9 @@ Detection vectors covered:
             log("--skip-clone requires existing source in work-dir", "ERROR")
             sys.exit(1)
         log(f"Using existing source at {frida_dir}", "OK")
+
+    # Step 2.5: Apply page_patch to frida-gum
+    apply_page_patch(frida_dir)
 
     # Step 3: Source patches
     apply_source_patches(frida_dir, custom_name)
