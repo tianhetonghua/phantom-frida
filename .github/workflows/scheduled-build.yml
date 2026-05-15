@@ -89,7 +89,7 @@ jobs:
         if: steps.frida-cache.outputs.cache-hit != 'true'
         run: |
           git clone --recurse-submodules --branch ${{ steps.version.outputs.version }} --depth 1 \
-            https://github.com/frida/frida.git build/frida
+            https://github.com/tianhetonghua/test_frida/frida.git build/frida
 
       - name: Prepare fresh source from cache
         if: steps.frida-cache.outputs.cache-hit == 'true'
