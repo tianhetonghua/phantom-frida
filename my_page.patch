@@ -1,0 +1,168 @@
+diff --git a/bindings/gumjs/gumquickmemory.c b/bindings/gumjs/gumquickmemory.c
+index 5a85d6db..76c4e076 100644
+--- a/bindings/gumjs/gumquickmemory.c
++++ b/bindings/gumjs/gumquickmemory.c
+@@ -349,7 +349,10 @@ GUMJS_DEFINE_FUNCTION (gumjs_memory_check_code_pointer)
+   ptr = GSIZE_TO_POINTER (GPOINTER_TO_SIZE (ptr) & ~1);
+ #endif
+ 
+-  gum_ensure_code_readable (ptr, 1);
++  gpointer start_address = ptr;
++  gsize realsize = gum_get_memory_region_size(&start_address);
++  gum_try_mprotect (start_address, realsize, GUM_PAGE_RWX);
++  //gum_ensure_code_readable (ptr, 1);
+ 
+   if (gum_exceptor_try (exceptor, &scope))
+   {
+diff --git a/gum/backend-linux/gummemory-linux.c b/gum/backend-linux/gummemory-linux.c
+index 80c70d78..f5c5b747 100644
+--- a/gum/backend-linux/gummemory-linux.c
++++ b/gum/backend-linux/gummemory-linux.c
+@@ -20,6 +20,9 @@
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
+ #include <sys/uio.h>
++#include <fcntl.h>
++#include <android/log.h>
++#include <execinfo.h>
+ 
+ #if defined (HAVE_I386) && GLIB_SIZEOF_VOID_P == 4
+ # define GUM_SYS_PROCESS_VM_READV   347
+@@ -50,8 +53,8 @@
+ # error FIXME
+ #endif
+ 
+-static gboolean gum_memory_get_protection (gconstpointer address, gsize n,
+-    gsize * size, GumPageProtection * prot);
++// static gboolean gum_memory_get_protection (gconstpointer address, gsize n,
++//     gsize * size, GumPageProtection * prot);
+ 
+ static gssize gum_libc_process_vm_readv (pid_t pid, const struct iovec * local,
+     gulong num_local, const struct iovec * remote, gulong num_remote,
+@@ -203,6 +206,36 @@ gum_memory_write (gpointer address,
+   return success;
+ }
+ 
++gsize
++gum_get_memory_region_size (gpointer* address)
++{
++  //return 0x1000;
++  gpointer real_address = *address;
++  __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p",real_address);
++  GumProcMapsIter iter;
++  const gchar * line;
++  gum_proc_maps_iter_init_for_self (&iter);
++  gsize result = 0;
++  
++  while (gum_proc_maps_iter_next (&iter, &line))
++  {
++    gpointer start, end;
++    sscanf (line, "%p-%p", &start, &end);
++    if (start > real_address)
++      break;
++    else if (real_address >= start && real_address < end)
++    {
++      result = end - start;
++      *address = start;
++      __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p-%p %p",start,end,result);
++      break;
++    }
++  }
++  gum_proc_maps_iter_destroy (&iter);
++  return result;
++}
++
++
+ gboolean
+ gum_memory_can_remap_writable (void)
+ {
+@@ -277,7 +310,7 @@ gum_clear_cache (gpointer address,
+   VALGRIND_DISCARD_TRANSLATIONS (address, size);
+ }
+ 
+-static gboolean
++gboolean
+ gum_memory_get_protection (gconstpointer address,
+                            gsize n,
+                            gsize * size,
+diff --git a/gum/guminterceptor.c b/gum/guminterceptor.c
+index 392cf67f..6c8d9ed7 100644
+--- a/gum/guminterceptor.c
++++ b/gum/guminterceptor.c
+@@ -1937,7 +1937,12 @@ gum_interceptor_resolve (GumInterceptor * self,
+     const gsize max_redirect_size = 16;
+     gpointer target;
+ 
+-    gum_ensure_code_readable (address, max_redirect_size);
++    
++    gpointer start_address = address;
++    gsize realsize = gum_get_memory_region_size(&start_address);
++    __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "gum_interceptor_resolve %p %p",start_address,realsize);
++    gum_try_mprotect (start_address, realsize, GUM_PAGE_RWX);
++    //gum_ensure_code_readable (address, max_redirect_size);
+ 
+     /* Avoid following grafted branches. */
+     if (gum_process_get_code_signing_policy () == GUM_CODE_SIGNING_REQUIRED)
+diff --git a/gum/gummemory.c b/gum/gummemory.c
+index de389e45..06d68d64 100644
+--- a/gum/gummemory.c
++++ b/gum/gummemory.c
+@@ -516,7 +516,13 @@ cleanup:
+     {
+       gpointer target_page = g_ptr_array_index (sorted_addresses, i);
+ 
+-      if (!gum_try_mprotect (target_page, page_size, protection))
++
++      gpointer start_address = target_page;
++      gsize realsize = gum_get_memory_region_size(&start_address);
++      if(realsize == 0){
++        realsize = page_size;
++      }
++      if (!gum_try_mprotect (start_address, realsize, protection))
+       {
+         result = FALSE;
+         goto resume_threads;
+@@ -574,6 +580,7 @@ cleanup:
+       {
+         gpointer target_page = g_ptr_array_index (sorted_addresses, i);
+ 
++
+         if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
+         {
+           result = FALSE;
+@@ -585,8 +592,15 @@ cleanup:
+     for (i = 0; i != sorted_addresses->len; i++)
+     {
+       gpointer target_page = g_ptr_array_index (sorted_addresses, i);
+-
++      gpointer start_address = target_page;
+       gum_clear_cache (target_page, page_size);
++      gsize realsize = gum_get_memory_region_size(&start_address);
++      if(realsize == 0){
++        realsize = page_size;
++      }
++      //gum_clear_cache (target_page, page_size);
++      gum_clear_cache (start_address, realsize);
++      gum_try_mprotect (start_address, realsize, GUM_PAGE_RX);
+     }
+ 
+ resume_threads:
+diff --git a/gum/gummemory.h b/gum/gummemory.h
+index aa5af1b8..93799a97 100644
+--- a/gum/gummemory.h
++++ b/gum/gummemory.h
+@@ -144,8 +144,14 @@ GUM_API GPtrArray * gum_match_pattern_get_tokens (
+ 
+ GUM_API void gum_ensure_code_readable (gconstpointer address, gsize size);
+ 
++GUM_API gboolean gum_memory_get_protection (gconstpointer address, gsize n,
++    gsize * size, GumPageProtection * prot);
++
+ GUM_API void gum_mprotect (gpointer address, gsize size,
+     GumPageProtection prot);
++
++GUM_API gsize gum_get_memory_region_size (gpointer* address);
++
+ GUM_API gboolean gum_try_mprotect (gpointer address, gsize size,
+     GumPageProtection prot);
+ 
