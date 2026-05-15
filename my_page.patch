@@ -112,44 +112,98 @@ index 392cf67f..7f27965f 100644
      /* Avoid following grafted branches. */
      if (gum_process_get_code_signing_policy () == GUM_CODE_SIGNING_REQUIRED)
 diff --git a/gum/gummemory.c b/gum/gummemory.c
-index de389e45..06d68d64 100644
+index de389e45..be16d76f 100644
 --- a/gum/gummemory.c
 +++ b/gum/gummemory.c
-@@ -516,7 +516,13 @@ cleanup:
+@@ -512,11 +512,24 @@ cleanup:
+           GUM_THREAD_FLAGS_NONE);
+     }
+ 
++    gpointer last_vma_start = NULL;
++
+     for (i = 0; i != sorted_addresses->len; i++)
      {
        gpointer target_page = g_ptr_array_index (sorted_addresses, i);
- 
--      if (!gum_try_mprotect (target_page, page_size, protection))
-+
 +      gpointer start_address = target_page;
 +      gsize realsize = gum_get_memory_region_size(&start_address);
++
 +      if(realsize == 0){
 +        realsize = page_size;
 +      }
++
++      if (start_address == last_vma_start)
++        continue;
++      last_vma_start = start_address;
+ 
+-      if (!gum_try_mprotect (target_page, page_size, protection))
++
 +      if (!gum_try_mprotect (start_address, realsize, protection))
        {
          result = FALSE;
          goto resume_threads;
-@@ -574,6 +580,7 @@ cleanup:
-       {
-         gpointer target_page = g_ptr_array_index (sorted_addresses, i);
+@@ -561,32 +574,46 @@ cleanup:
+     if (apply_num_pages != 0)
+       apply (apply_start, apply_target_start, apply_num_pages, apply_data);
  
+-    if (!rwx_supported)
+-    {
+-      /*
+-        * We don't bother restoring the protection on RWX systems, as we would
+-        * have to determine the old protection to be able to do so safely.
+-        *
+-        * While we could easily do that, it would add overhead, but it's not
+-        * really clear that it would have any tangible upsides.
+-        */
+-      for (i = 0; i != sorted_addresses->len; i++)
+-      {
+-        gpointer target_page = g_ptr_array_index (sorted_addresses, i);
+-
+-        if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
+-        {
+-          result = FALSE;
+-          goto resume_threads;
+-        }
+-      }
+-    }
++    // if (!rwx_supported)
++    // {
++    //   /*
++    //     * We don't bother restoring the protection on RWX systems, as we would
++    //     * have to determine the old protection to be able to do so safely.
++    //     *
++    //     * While we could easily do that, it would add overhead, but it's not
++    //     * really clear that it would have any tangible upsides.
++    //     */
++    //   for (i = 0; i != sorted_addresses->len; i++)
++    //   {
++    //     gpointer target_page = g_ptr_array_index (sorted_addresses, i);
 +
-         if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
-         {
-           result = FALSE;
-@@ -585,8 +592,15 @@ cleanup:
++
++    //     if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
++    //     {
++    //       result = FALSE;
++    //       goto resume_threads;
++    //     }
++    //   }
++    // }
++
++    last_vma_start = NULL;
+ 
      for (i = 0; i != sorted_addresses->len; i++)
      {
        gpointer target_page = g_ptr_array_index (sorted_addresses, i);
--
 +      gpointer start_address = target_page;
-       gum_clear_cache (target_page, page_size);
 +      gsize realsize = gum_get_memory_region_size(&start_address);
+ 
+-      gum_clear_cache (target_page, page_size);
 +      if(realsize == 0){
 +        realsize = page_size;
 +      }
-+      //gum_clear_cache (target_page, page_size);
++
++      if (start_address == last_vma_start)
++        continue;
++      last_vma_start = start_address;
++      
 +      gum_clear_cache (start_address, realsize);
 +      gum_try_mprotect (start_address, realsize, GUM_PAGE_RX);
      }
