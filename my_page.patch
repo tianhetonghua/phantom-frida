@@ -15,7 +15,7 @@ index 5a85d6d..76c4e07 100644
    if (gum_exceptor_try (exceptor, &scope))
    {
 diff --git a/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c b/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
-index 80c70d7..eba0420 100644
+index 80c70d7..8d00f76 100644
 --- a/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
 +++ b/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
 @@ -20,6 +20,9 @@
@@ -73,7 +73,7 @@ index 80c70d7..eba0420 100644
 +    {
 +      result = (gsize) (end - start);
 +      *address = start;
-+      __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p-%p %p",start,end,result);
++      // __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p-%p %p",start,end,result);
 +      cache_start = start;
 +      cache_end = end;
 +      break;
