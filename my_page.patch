@@ -123,7 +123,7 @@ index 392cf67f..7f27965f 100644
      /* Avoid following grafted branches. */
      if (gum_process_get_code_signing_policy () == GUM_CODE_SIGNING_REQUIRED)
 diff --git a/gum/gummemory.c b/gum/gummemory.c
-index de389e45..be16d76f 100644
+index de389e45..25525d6c 100644
 --- a/gum/gummemory.c
 +++ b/gum/gummemory.c
 @@ -512,11 +512,24 @@ cleanup:
@@ -145,61 +145,27 @@ index de389e45..be16d76f 100644
 +      if (start_address == last_vma_start)
 +        continue;
 +      last_vma_start = start_address;
++
  
 -      if (!gum_try_mprotect (target_page, page_size, protection))
-+
 +      if (!gum_try_mprotect (start_address, realsize, protection))
        {
          result = FALSE;
          goto resume_threads;
-@@ -561,32 +574,46 @@ cleanup:
-     if (apply_num_pages != 0)
-       apply (apply_start, apply_target_start, apply_num_pages, apply_data);
+@@ -574,6 +587,7 @@ cleanup:
+       {
+         gpointer target_page = g_ptr_array_index (sorted_addresses, i);
  
--    if (!rwx_supported)
--    {
--      /*
--        * We don't bother restoring the protection on RWX systems, as we would
--        * have to determine the old protection to be able to do so safely.
--        *
--        * While we could easily do that, it would add overhead, but it's not
--        * really clear that it would have any tangible upsides.
--        */
--      for (i = 0; i != sorted_addresses->len; i++)
--      {
--        gpointer target_page = g_ptr_array_index (sorted_addresses, i);
--
--        if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
--        {
--          result = FALSE;
--          goto resume_threads;
--        }
--      }
--    }
-+    // if (!rwx_supported)
-+    // {
-+    //   /*
-+    //     * We don't bother restoring the protection on RWX systems, as we would
-+    //     * have to determine the old protection to be able to do so safely.
-+    //     *
-+    //     * While we could easily do that, it would add overhead, but it's not
-+    //     * really clear that it would have any tangible upsides.
-+    //     */
-+    //   for (i = 0; i != sorted_addresses->len; i++)
-+    //   {
-+    //     gpointer target_page = g_ptr_array_index (sorted_addresses, i);
 +
-+
-+    //     if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
-+    //     {
-+    //       result = FALSE;
-+    //       goto resume_threads;
-+    //     }
-+    //   }
-+    // }
-+
+         if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RX))
+         {
+           result = FALSE;
+@@ -582,11 +596,24 @@ cleanup:
+       }
+     }
+ 
 +    last_vma_start = NULL;
- 
++
      for (i = 0; i != sorted_addresses->len; i++)
      {
        gpointer target_page = g_ptr_array_index (sorted_addresses, i);
@@ -216,7 +182,7 @@ index de389e45..be16d76f 100644
 +      last_vma_start = start_address;
 +      
 +      gum_clear_cache (start_address, realsize);
-+      gum_try_mprotect (start_address, realsize, GUM_PAGE_RX);
++      // gum_try_mprotect (start_address, realsize, GUM_PAGE_RX);
      }
  
  resume_threads:

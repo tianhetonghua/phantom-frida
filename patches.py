@@ -113,6 +113,11 @@ def get_rollback_patches(name: str) -> list[tuple[str, str]]:
         (f"{name}-server.version", "frida-server.version"),
         (f"{name}-server.plist", "frida-server.plist"),
         (f"{name}-server.xcent", "frida-server.xcent"),
+        # compat/meson.build: glib_flavor 参数必须保持 'frida'，不能被重命名
+        # Frida 17.9.2 新增此参数，传给 build.py 的 choices=["upstream", "frida"]
+        # 全局替换 "/ 'frida'" 会误将 "? 'upstream' : 'frida'" 中的 'frida' 改成 custom name
+        # 导致 build.py argparse 报错，以退出码 2 失败
+        (f"? 'upstream' : '{name}'", "? 'upstream' : 'frida'"),
     ]
 
 
