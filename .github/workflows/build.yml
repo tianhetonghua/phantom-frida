@@ -72,7 +72,9 @@ jobs:
             ninja-build \
             gperf \
             bison \
-            flex
+            flex  \
+            libffi-dev \ 
+            libpcre3-dev   
           pip3 install --upgrade pip setuptools wheel
           pip3 install 'meson>=1.1.0,<1.4.0'
           pip3 install pyyaml typing-extensions
