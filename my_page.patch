@@ -97,14 +97,14 @@ index 80c70d78..76b3da81 100644
                             gsize n,
                             gsize * size,
 diff --git a/gum/guminterceptor.c b/gum/guminterceptor.c
-index 392cf67f..7600a304 100644
+index 392cf67f..7f27965f 100644
 --- a/gum/guminterceptor.c
 +++ b/gum/guminterceptor.c
 @@ -16,6 +16,7 @@
  #include "gummetalarray.h"
  #include "gumprocess-priv.h"
  #include "gumtls.h"
-+// #include <android/log.h>
++#include <android/log.h>
  
  #include <string.h>
  #ifdef HAVE_DARWIN
