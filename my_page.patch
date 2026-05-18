@@ -1,7 +1,7 @@
-diff --git a/bindings/gumjs/gumquickmemory.c b/bindings/gumjs/gumquickmemory.c
-index 5a85d6db..76c4e076 100644
---- a/bindings/gumjs/gumquickmemory.c
-+++ b/bindings/gumjs/gumquickmemory.c
+diff --git a/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c b/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
+index 5a85d6d..76c4e07 100644
+--- a/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
++++ b/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
 @@ -349,7 +349,10 @@ GUMJS_DEFINE_FUNCTION (gumjs_memory_check_code_pointer)
    ptr = GSIZE_TO_POINTER (GPOINTER_TO_SIZE (ptr) & ~1);
  #endif
@@ -14,10 +14,10 @@ index 5a85d6db..76c4e076 100644
  
    if (gum_exceptor_try (exceptor, &scope))
    {
-diff --git a/gum/backend-linux/gummemory-linux.c b/gum/backend-linux/gummemory-linux.c
-index 80c70d78..76b3da81 100644
---- a/gum/backend-linux/gummemory-linux.c
-+++ b/gum/backend-linux/gummemory-linux.c
+diff --git a/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c b/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
+index 80c70d7..eba0420 100644
+--- a/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
++++ b/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
 @@ -20,6 +20,9 @@
  #include <sys/mman.h>
  #include <sys/syscall.h>
@@ -50,7 +50,7 @@ index 80c70d78..76b3da81 100644
 +  static gpointer cache_end = NULL;
 +
 +  gpointer real_address = *address;
-+  __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p",real_address);
++  // __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p",real_address);
 +
 +  if (real_address >= cache_start && real_address < cache_end)
 +  {
@@ -96,10 +96,10 @@ index 80c70d78..76b3da81 100644
  gum_memory_get_protection (gconstpointer address,
                             gsize n,
                             gsize * size,
-diff --git a/gum/guminterceptor.c b/gum/guminterceptor.c
-index 392cf67f..7f27965f 100644
---- a/gum/guminterceptor.c
-+++ b/gum/guminterceptor.c
+diff --git a/subprojects/frida-gum/gum/guminterceptor.c b/subprojects/frida-gum/gum/guminterceptor.c
+index 392cf67..ba6facf 100644
+--- a/subprojects/frida-gum/gum/guminterceptor.c
++++ b/subprojects/frida-gum/gum/guminterceptor.c
 @@ -16,6 +16,7 @@
  #include "gummetalarray.h"
  #include "gumprocess-priv.h"
@@ -116,16 +116,16 @@ index 392cf67f..7f27965f 100644
 +    
 +    gpointer start_address = address;
 +    gsize realsize = gum_get_memory_region_size(&start_address);
-+    __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "gum_interceptor_resolve %p %p",start_address,realsize);
++    // __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "gum_interceptor_resolve %p %p",start_address,realsize);
 +    gum_try_mprotect (start_address, realsize, GUM_PAGE_RWX);
 +    //gum_ensure_code_readable (address, max_redirect_size);
  
      /* Avoid following grafted branches. */
      if (gum_process_get_code_signing_policy () == GUM_CODE_SIGNING_REQUIRED)
-diff --git a/gum/gummemory.c b/gum/gummemory.c
-index de389e45..25525d6c 100644
---- a/gum/gummemory.c
-+++ b/gum/gummemory.c
+diff --git a/subprojects/frida-gum/gum/gummemory.c b/subprojects/frida-gum/gum/gummemory.c
+index de389e4..25525d6 100644
+--- a/subprojects/frida-gum/gum/gummemory.c
++++ b/subprojects/frida-gum/gum/gummemory.c
 @@ -512,11 +512,24 @@ cleanup:
            GUM_THREAD_FLAGS_NONE);
      }
@@ -186,10 +186,10 @@ index de389e45..25525d6c 100644
      }
  
  resume_threads:
-diff --git a/gum/gummemory.h b/gum/gummemory.h
-index aa5af1b8..93799a97 100644
---- a/gum/gummemory.h
-+++ b/gum/gummemory.h
+diff --git a/subprojects/frida-gum/gum/gummemory.h b/subprojects/frida-gum/gum/gummemory.h
+index aa5af1b..93799a9 100644
+--- a/subprojects/frida-gum/gum/gummemory.h
++++ b/subprojects/frida-gum/gum/gummemory.h
 @@ -144,8 +144,14 @@ GUM_API GPtrArray * gum_match_pattern_get_tokens (
  
  GUM_API void gum_ensure_code_readable (gconstpointer address, gsize size);
