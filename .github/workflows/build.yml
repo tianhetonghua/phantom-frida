@@ -73,7 +73,9 @@ jobs:
             gperf \
             bison \
             flex
-          pip3 install --upgrade meson
+          pip3 install --upgrade pip setuptools wheel
+          pip3 install 'meson>=1.1.0,<1.4.0'
+          pip3 install pyyaml typing-extensions
 
       # Cache NDK (~1.5 GB) — saves ~3 min on subsequent runs
       - name: Cache NDK
