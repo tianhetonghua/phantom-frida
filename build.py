@@ -401,8 +401,7 @@ def apply_page_patch(frida_dir: Path):
         log("my_page.patch not found, skipping", "WARN")
         return
     log("Applying my_page.patch to frida-gum...", "STEP")
-    gum_dir = frida_dir / "subprojects" / "frida-gum"
-    run(f"git apply {patch_file}", cwd=str(gum_dir))
+    run(f"git apply {patch_file}", cwd=str(frida_dir))
     log("my_page.patch applied", "OK")
 
 
