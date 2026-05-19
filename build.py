@@ -715,8 +715,33 @@ def build_frida(frida_dir: Path, ndk_path: Path):
 # Collect artifacts
 # ============================================================================
 
+def strip_binary(binary_path: Path, ndk_path: Path, arch: str):
+    """Strip a compiled binary using NDK llvm-strip.
+
+    Used when collect_artifacts falls back to a *-modulated.so (unstripped
+    intermediate), which happens on x86/x86_64 where post_process.py places
+    the final artifact at a different path that find_artifact misses.
+    """
+    # NDK r23+: toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
+    strip_bin = ndk_path / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin" / "llvm-strip"
+    if not strip_bin.exists():
+        log(f"    llvm-strip not found at {strip_bin}, skipping strip", "WARN")
+        return
+
+    flag = "--strip-unneeded" if binary_path.suffix == ".so" else "--strip-all"
+    result = subprocess.run(
+        [str(strip_bin), flag, str(binary_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        log(f"    Stripped {binary_path.name} ({binary_path.stat().st_size:,} bytes after strip)", "OK")
+    else:
+        log(f"    llvm-strip failed: {result.stderr[:200]}", "WARN")
+
+
 def collect_artifacts(frida_dir: Path, arch: str, custom_name: str,
-                      version: str, output_dir: Path, extended: bool):
+                      version: str, output_dir: Path, extended: bool,
+                      ndk_path: Path | None = None):
     """Find, binary-patch, and package build artifacts."""
     log(f"Collecting artifacts for {arch}...", "STEP")
 
@@ -773,6 +798,9 @@ def collect_artifacts(frida_dir: Path, arch: str, custom_name: str,
     ])
     if agent:
         log(f"  Agent: {agent.name}", "OK")
+        if "modulated" in agent.name and ndk_path:
+            log("    Agent is unstripped modulated intermediate — stripping now", "WARN")
+            strip_binary(agent, ndk_path, arch)
         apply_binary_patches(agent, custom_name, extended)
 
     # --- Gadget .so ---
@@ -784,6 +812,9 @@ def collect_artifacts(frida_dir: Path, arch: str, custom_name: str,
     ])
     if gadget:
         log(f"  Gadget: {gadget.name}", "OK")
+        if "modulated" in gadget.name and ndk_path:
+            log("    Gadget is unstripped modulated intermediate — stripping now", "WARN")
+            strip_binary(gadget, ndk_path, arch)
         apply_binary_patches(gadget, custom_name, extended)
         save_artifact(gadget, f"{custom_name}-gadget-{version}-android-{arch_short}.so")
 
@@ -977,7 +1008,7 @@ Detection vectors covered:
         build_frida(frida_dir, ndk_path)
 
         # Collect and binary-patch artifacts
-        collect_artifacts(frida_dir, arch, custom_name, version, output_dir, args.extended)
+        collect_artifacts(frida_dir, arch, custom_name, version, output_dir, args.extended, ndk_path)
 
     # Step 6: Verification
     if args.verify:
