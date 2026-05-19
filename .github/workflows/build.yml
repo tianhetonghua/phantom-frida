@@ -19,8 +19,8 @@ on:
         options:
           - android-arm64
           - android-arm
-          - android-arm64,android-arm
-          - android-arm64,android-arm,android-x86_64,android-x86
+          - android-x86_64
+          - android-x86
       port:
         description: 'Custom port (empty = keep 27042)'
         required: false
