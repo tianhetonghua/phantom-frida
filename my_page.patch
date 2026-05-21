@@ -1,3 +1,16 @@
+diff --git a/subprojects/frida-core/src/linux/linux-host-session.vala b/subprojects/frida-core/src/linux/linux-host-session.vala
+index 3f5cba7..278d669 100644
+--- a/subprojects/frida-core/src/linux/linux-host-session.vala
++++ b/subprojects/frida-core/src/linux/linux-host-session.vala
+@@ -1709,7 +1709,7 @@ namespace Frida {
+ 
+ 			foreach (var m in maps) {
+ 				unowned string path = m.path;
+-				if (path.has_suffix ("/libstagefright.so") && m.readable && m.executable) {
++				if (path.has_suffix ("/libstagefright.so") && m.executable) {
+ 					if (payload_base == 0) {
+ 						payload_base = m.end - Gum.query_page_size ();
+ 						payload_original_protection = Posix.PROT_READ | Posix.PROT_EXEC;
 diff --git a/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c b/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
 index 5a85d6d..76c4e07 100644
 --- a/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
