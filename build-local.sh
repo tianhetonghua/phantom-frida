@@ -194,7 +194,7 @@ if [[ "$PLATFORM" == "Darwin" || "$USE_DOCKER" -eq 1 ]]; then
   [[ "$SKIP_CLONE"  -eq 1 ]] && INNER_CMD="$INNER_CMD --skip-clone"
   [[ "$SKIP_BUILD"  -eq 1 ]] && INNER_CMD="$INNER_CMD --skip-build"
 
-  SETUP_CMDS="apt-get update -qq && apt-get install -y -qq build-essential curl git python3 unzip default-jdk > /dev/null 2>&1"
+  SETUP_CMDS="apt-get update -qq && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - 2>/dev/null && apt-get install -y -qq build-essential curl git python3 unzip default-jdk nodejs > /dev/null 2>&1"
 
   docker run --rm -i --platform linux/amd64 \
     "${DOCKER_ENV[@]}" \
