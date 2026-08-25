@@ -1,204 +1,186 @@
 # phantom-frida
 
-Build anti-detection Frida server from source. Covers 16 detection vectors with ~90 patches.
+基于 Frida 17.9.10 的反检测定制 server 编译项目。从源码编译一个替换了所有 "frida" 标识（字符串、符号、线程名、文件路径）的定制 server。
 
-Extended beyond [ajeossida](https://github.com/hackcatml/ajeossida) with additional stealth techniques: custom port, binary string sweep, internal symbol renaming, temp path obfuscation, and more.
+## 功能概览
 
-## How it works
+- **反检测**：16 个检测向量（进程名、maps 扫描、线程名、memfd、SELinux 标签、D-Bus、端口等）
+- **XOM 修复**：解决 Android 10（kernel 4.9 / SELinux Enforcing）上 execute-only 内存导致 zymbiote 注入崩溃的问题
+- **本地编译**：macOS（Docker）和 Linux/WSL 均可一键编译
 
-Phantom-frida clones Frida source, applies patches in 4 phases (source, targeted, post-build, binary), and compiles a custom server where all identifiable "frida" strings, symbols, thread names, and file paths are replaced with a custom name.
+## 本地编译
 
-Standard Frida client (`pip install frida-tools`) connects to the patched server normally — the client-server protocol is preserved.
-
-## Quick Start
-
-### GitHub Actions (recommended)
-
-1. Fork this repo
-2. Actions > **Build Custom Frida** > Run workflow
-3. Choose version, name, architecture, options
-4. Download artifacts (~8 min with cache, ~35 min cold build)
-
-### Weekly auto-builds
-
-The **Weekly Stealth Build** workflow runs every Sunday:
-- Detects latest Frida version automatically
-- Generates a random name and port via `namegen.py`
-- Builds with `--extended` for maximum stealth
-- Creates a GitHub Release with binary + `build-info.json`
-
-### Local build (macOS via Docker)
+### macOS（Docker）
 
 ```bash
-# 前置(一次性):
+# 前置（一次性）：
 brew install colima docker
-colima start --dns 2235.5.5          # 中国网络需要
-docker pull docker.m.daocloud.io/library/ubuntu:22.04
+colima start --dns 2235.5.5                          # 中国网络需要
+docker pull docker.m.daocloud.io/library/ubuntu:22.04  # 国内镜像
 docker tag docker.m.daocloud.io/library/ubuntu:22.04 ubuntu:22.04
 
-# 编译:
+# 编译：
 ./build-local.sh -v 17.9.10 -n meituan -a android-arm64 -p 6666 --yes
-
-# 非交互 + 自定义:
-FRIDA_VERSION=17.9.10 CUSTOM_NAME=myserver CUSTOM_PORT=27142 ./build-local.sh --yes
 ```
 
-`build-local.sh` 自动检测 macOS → Docker (ubuntu:22.04) → build.py。NDK + frida 源码缓存在 `.docker-build-cache/`(首次 ~1.5GB NDK 下载,后续 cache hit)。
+`build-local.sh` 自动检测 macOS → 启动 Docker 容器（ubuntu:22.04）→ 运行 `build.py`（clone frida → 打补丁 → 下载 NDK → meson+ninja 编译）。NDK + frida 源码缓存在 `.docker-build-cache/`。
 
-### Local build (WSL Ubuntu)
+### Linux / WSL
 
 ```bash
-python3 build.py --version 17.9.10
+# 直接用 build.py：
+python3 build.py --version 17.9.10 --name meituan --arch android-arm64 --port 6666 --verify
 
-# Full options:
-python3 build.py --version 17.9.10 --name myserver --port 27142 --extended --verify
+# 或用 build-local.sh（原生 Linux 路径）：
+./build-local.sh -v 17.9.10 -n meituan -a android-arm64 -p 6666 --yes
 
-# Patch only (inspect changes without compiling):
+# 或用 WSL 脚本：
+wsl -d Ubuntu bash build-wsl.sh
+
+# 只打补丁不编译（检查改动）：
 python3 build.py --version 17.9.10 --skip-build
 ```
 
-### WSL helper script
+### 编译选项
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `-v, --version` | Frida 版本 | 17.7.2 |
+| `-n, --name` | 替换 "frida" 的自定义名 | ajeossida |
+| `-a, --arch` | 目标架构（逗号分隔） | android-arm64 |
+| `-p, --port` | 自定义端口 | 27042 |
+| `-e, --extended` | 扩展反检测（向量 9-16） | 关 |
+| `--temp-fixes` | 稳定性修复 | 关 |
+| `--verify` | 编译后扫描残留 "frida" 字符串 | 开 |
+| `--skip-build` | 只打补丁不编译 | 关 |
+| `--skip-clone` | 复用已有源码 | 关 |
+| `--ndk-path` | 指定已有 NDK 路径 | 自动下载 |
+| `-y, --yes` | 非交互模式 | 关 |
+
+## 部署
 
 ```bash
-wsl -d Ubuntu bash build-wsl.sh
+# 推到设备
+adb push output/meituan-server-17.9.10-android-arm64 /data/dd/meituan-server
+adb shell chmod 755 /data/dd/meituan-server
+chcon u:object_r:system_data_file:s0 /data/dd/meituan-server 2>/dev/null
 
-# With options:
-FRIDA_VERSION=17.9.10 CUSTOM_NAME=myserver CUSTOM_PORT=27142 EXTENDED=1 \
-  wsl -d Ubuntu bash build-wsl.sh
+# 启动
+adb shell /data/dd/meituan-server -l 127.0.0.0:6666 &
+adb forward tcp:6666 tcp:6666
+frida -H 127.0.0.1:6666 -f com.example.app
 ```
 
-## Detection Vectors
+## XOM 修复（Android 10 / kernel 4.9 / SELinux Enforcing）
 
-| # | Vector | Detection method | Base | Extended |
-|---|--------|-----------------|------|----------|
-| 1 | Process name `frida-server` | `/proc/*/cmdline`, `ps` | Renamed | Renamed |
-| 2 | `libfrida-agent.so` in maps | `/proc/self/maps` scan | Renamed | Renamed |
-| 3 | Thread names `gum-js-loop`, `gmain`, `gdbus` | `/proc/self/task/*/comm` | Renamed | Renamed |
-| 4 | memfd name `frida-agent-64.so` | `/proc/self/fd/` readlink | `jit-cache` | `jit-cache` |
-| 5 | `frida_agent_main` symbol | `dlsym` / memory scan | Renamed | Renamed |
-| 6 | SELinux labels `frida_file` | SELinux context check | Renamed | Renamed |
-| 7 | libc hooks (exit, signal) | Hook detection | Disabled | Disabled |
-| 8 | D-Bus service `re.frida.server` | D-Bus introspection | Renamed | Renamed |
-| 9 | Default port 27042 | `connect()` scan | - | `--port N` |
-| 10 | D-Bus interfaces | Protocol inspection | - | Renamed |
-| 11 | Internal C symbols | Memory string scan | - | Renamed |
-| 12 | GType names `FridaServer` | GObject introspection | - | Renamed |
-| 13 | Temp paths `.frida`, `frida-` | Filesystem scan | - | Renamed |
-| 14 | Binary string residuals | Binary `strings` scan | - | Swept |
-| 15 | Build config defines | Memory scan | - | Renamed |
-| 16 | Asset directory `libdir/frida` | Path inspection | - | Renamed |
+### 问题
 
-## Options
+部分 Android 10 设备（如 MI 8 SE / kernel 4.9 / SELinux Enforcing）的内核**真强制 execute-only 内存**：libstagefright 的 `.text` 页映射为 `--xp`（只可执行、不可读）。zymbiote payload 的第一条自读指令（`LDR x8, [x20, #8]` 读自己的结构体）直接 `SIGSEGV`，spawn 注入崩溃。
 
-```
---version, -v    Frida version to build (required)
---name, -n       Custom name replacing 'frida' (default: ajeossida; use random for stealth)
---arch, -a       Target arch (default: android-arm64)
---port, -p       Custom listening port (default: 27042)
---extended, -e   Enable extended anti-detection (vectors 9-16)
---temp-fixes     Stability fixes (perfetto skip, cloak detach)
---verify         Scan output for residual 'frida' strings
---skip-build     Apply patches only, don't compile
---skip-clone     Use existing source in work-dir
---ndk-path       Path to existing Android NDK r29
-```
+对比：MI 8 Lite（kernel 4.4 / SELinux Permissive）的 `--xp` 页**硬件层实际可读**，zymbiote 自读直接过，不崩。
 
-## Deploy
+### 修复方案
 
-```bash
-# Push to device
-adb push output/myserver-server-17.7.2-android-arm64 /data/local/tmp/myserver-server
-adb shell chmod 755 /data/local/tmp/myserver-server
+frida-server 在 `inject_zymbiote` 里、写完 payload+GOT 后、SIGCONT 之前，对 zygote64 的 payload 页做一次**瞬态 ptrace mprotect**（`--xp` → `RX`）。子进程 fork 时继承 RX → 原版 zymbiote 自读过 → 注入正常。
 
-# Start (default port 27042)
-adb shell /data/local/tmp/myserver-server -D &
-frida -U -f com.example.app
+| 特性 | 说明 |
+|------|------|
+| 只在 `--xp` 页软化 | `needs_softening = !m.readable`；`r-x` 页（如 MI 8 Lite）跳过，不碰 ptrace |
+| 跳过 32-bit zygote | 检测 `iov_len`，非 aarch64 直接 detach |
+| 跳过待处理 SIGSTOP | 循环 PTRACE_CONT 直到 brk 的 SIGTRAP |
+| TracerPid=0 | ptrace detach 后恢复，不留痕 |
+| app 从不被 ptrace | 只 ptrace 父 zygote（fork 前） |
+| zymbiote.c 不改 | 原版 zymbiote，无 trampoline / /proc/self/mem |
 
-# Start (custom port)
-adb shell /data/local/tmp/myserver-server -D &
-adb forward tcp:27142 tcp:27142
-frida -H 127.0.0.1:27142 -f com.example.app
-```
+## Frida 源码改动
 
-Each weekly release includes a `build-info.json` with the name, port, version, and architecture.
+### my_page.patch（核心补丁）
 
-## XOM Fix (Android 10 / kernel 4.9 / SELinux Enforcing)
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `linjector-glue.c` | 新增 `frida_soften_zygote_page()` | 瞬态 ptrace zygote：写 svc;brk stub → setregs mprotect(RX) → CONT(skip SIGSTOP) → SIGTRAP → restore → DETACH。跳过非 aarch64 |
+| `linux-host-session.vala` | `if` 条件去掉 `m.readable` | 扫 maps 时能匹配 `--xp` 页（原版 `m.readable && m.executable` 跳过 --xp） |
+| `linux-host-session.vala` | 新增 `needs_softening` 字段 | `= !m.readable`；`--xp` → true（需要软化），`r-x` → false（跳过） |
+| `linux-host-session.vala` | 新增 `soften_zygote_page` extern + 条件调用 | 在 `inject_zymbiote` 里、payload+GOT 写完、SIGCONT 前 |
+| `frida-gum/gum/gummemory.c` 等 5 文件 | `gum_ensure_code_readable` → 整段 RWX | agent 进程后读/改 execute-only 代码段（用于 hook 打补丁） |
+| `zymbiote.c` | **不改** | 原版 zymbiote，流程跟 MI 8 Lite 一致 |
 
-On devices with true execute-only memory enforcement (e.g. MI 8 SE / kernel 4.9 / SELinux Enforcing), the zygote's libstagefright `.text` page is mapped `--xp` (execute-only, no read). The zymbiote payload's self-read of its `ZymbioteContext` struct faults with `SIGSEGV SEGV_ACCERR`.
+### 构建脚本改动
 
-**Fix:** `frida_soften_zygote_page()` in `linjector-glue.c` — transient ptrace on the zygote (after writing payload+GOT, before SIGCONT in `inject_zymbiote`) to mprotect the payload page `--xp → RX`. Forked children inherit RX → original zymbiote self-read works.
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `build-local.sh` | `${CUSTOM_NAME,,}` → `tr` | macOS bash 3.2 兼容 |
+| `build-local.sh` | `docker run -it` → `-i` | 非交互模式不挂 |
+| `build.py` | `unzip -q` → `unzip -q -o` | NDK 解压不交互提示 |
 
-- Only on `--xp` pages (`needs_softening = !m.readable`; `r-x` pages like MI 8 Lite are skipped, no ptrace).
-- Skips non-aarch64 (32-bit zygote).
-- `TracerPid` returns to 0 after detach. App process is never ptraced.
-- `zymbiote.c` is **unchanged** (original zymbiote, no trampoline / `/proc/self/mem`).
+### 构建阶段
 
-## Build Phases
+| 阶段 | 说明 |
+|------|------|
+| Phase 1: 源码替换 | 全局字符串替换（frida → 自定义名）：frida-agent、frida-helper、frida-server、re.frida.* 等 |
+| Phase 2: 定向修复 | meson.build、memfd 名、libc hook 禁用、SELinux 标签 |
+| Phase 3: 后编译修复 | 重命名 `frida_agent_main` 符号（Vala 编译产物）→ 二次增量编译 |
+| Phase 4: 二进制补丁 | 十六进制替换线程名（gmain、gdbus、pool-spawner）+ 残留字符串扫描 |
 
-1. **Source patches**: Global string replacement across the entire Frida source tree. Renames all `frida-agent`, `frida-helper`, `frida-server`, `re.frida.*` references. Rebuilds Android helper DEX with renamed Java package.
+## 反检测向量
 
-2. **Targeted patches**: Specific fixes for build system files (meson.build), memfd names, libc hook disabling, SELinux labels.
+| # | 检测向量 | 检测方法 | 基础 | 扩展 |
+|---|---------|---------|------|------|
+| 1 | 进程名 `frida-server` | `/proc/*/cmdline` | 重命名 | 重命名 |
+| 2 | `libfrida-agent.so` 在 maps | `/proc/self/maps` 扫描 | 重命名 | 重命名 |
+| 3 | 线程名 `gum-js-loop`、`gmain`、`gdbus` | `/proc/self/task/*/comm` | 重命名 | 重命名 |
+| 4 | memfd 名 `frida-agent-64.so` | `/proc/self/fd/` readlink | `jit-cache` | `jit-cache` |
+| 5 | `frida_agent_main` 符号 | `dlsym` / 内存扫描 | 重命名 | 重命名 |
+| 6 | SELinux 标签 `frida_file` | SELinux 上下文检查 | 重命名 | 重命名 |
+| 7 | libc hooks（exit、signal） | hook 检测 | 禁用 | 禁用 |
+| 8 | D-Bus 服务 `re.frida.server` | D-Bus 内省 | 重命名 | 重命名 |
+| 9 | 默认端口 27042 | `connect()` 扫描 | — | `--port N` |
+| 10 | D-Bus 接口名 | 协议检查 | — | 重命名 |
+| 11 | 内部 C 符号 | 内存字符串扫描 | — | 重命名 |
+| 12 | GType 名 `FridaServer` | GObject 内省 | — | 重命名 |
+| 13 | 临时路径 `.frida`、`frida-` | 文件系统扫描 | — | 重命名 |
+| 14 | 二进制残留字符串 | `strings` 扫描 | — | 清扫 |
+| 15 | 构建配置宏 | 内存扫描 | — | 重命名 |
+| 16 | 资源目录 `libdir/frida` | 路径检查 | — | 重命名 |
 
-3. **Post-build patches**: After first compilation, renames `frida_agent_main` symbol (generated by Vala compiler, only exists in build output). Requires a second incremental build.
-
-4. **Binary patches**: Hex-level replacements in compiled binaries — thread names (`gmain`, `gdbus`, `pool-spawner`), and optional binary string sweep for residual `frida`/`Frida` strings.
-
-## Architecture
+## 文件结构
 
 ```
-build.py                Main build script (clone, patch, compile, collect)
-patches.py              All patch definitions (87 patches + 17 rollbacks)
-namegen.py              Random name/port generator for stealth builds
-build-local.sh           Local build (macOS Docker / Linux native)
-build-wsl.sh            WSL helper script
-test_comprehensive.js   Anti-detection + Java bridge verification script
-.github/workflows/
-  build.yml             Manual build workflow
-  scheduled-build.yml   Weekly auto-build with releases
+build.py                 主构建脚本（clone、打补丁、编译、收集产物）
+build-local.sh           本地构建（macOS Docker / Linux 原生）
+build-wsl.sh             WSL 构建脚本
+patches.py               所有补丁定义（87 补丁 + 17 回滚）
+namegen.py               随机名/端口生成器
+my_page.patch            XOM 修复补丁（zygote-RX ptrace soften + frida-gum RWX）
+wxshadow.patch           wxshadow 隐蔽补丁
+test_comprehensive.js    反检测 + Java bridge 验证脚本
 ```
 
-## Requirements
+## 环境要求
 
-**GitHub Actions (recommended):** No local setup needed.
+| 环境 | 要求 |
+|------|------|
+| macOS | Docker（Colima）+ `colima start --dns 2235.5.5` |
+| Linux / WSL | Ubuntu 22.04+、Python 3.10+、Git/curl/unzip/make、~20GB 磁盘 |
+| NDK | Android NDK r29（自动下载，~1.5GB） |
 
-**Local build (macOS):** Docker (Colima) + `colima start --dns 2235.5.5` (China network).
+## 版本支持
 
-**Local build (Linux/WSL):**
-- Ubuntu 22.04+ (WSL works)
-- Python 3.10+
-- Git, curl, unzip, make
-- ~20 GB free disk space
-- Android NDK r29 (auto-downloaded)
+| Frida | 状态 |
+|-------|------|
+| 17.9.10 | 完全验证 + XOM 修复 |
+| 17.x | 兼容（自动检测 API 差异） |
+| 16.x | 兼容 |
 
-## Version Support
+## 已知限制
 
-| Frida | Status |
-|-------|--------|
-| 17.9.10 | Fully verified + XOM fix |
-| 17.x | Compatible (auto-detects API differences) |
-| 16.x | Compatible (auto-detects API differences) |
+- **arm32 应用**（Chrome）：Frida 上游 bug，非本项目问题
+- **D-Bus 接口名**（`re.frida.HostSession17` 等）：基础模式不重命名（协议层，重命名会破坏标准 frida 客户端）
 
-## Tested Apps
-
-Verified on arm64 Android 14 device with `--extended`:
-
-| App | Java bridge | Hooks | Anti-detection |
-|-----|-------------|-------|----------------|
-| Telegram | 28,772 classes | SSL+crypto | All clean |
-| Google Play Store | 47,305 classes | Activity hooks | All clean |
-| Facebook | 54,064 classes | Basic hooks | All clean |
-| Magisk | 27,737 classes | Activity hooks | All clean |
-
-## Known Limitations
-
-- **arm32 apps** (Chrome): Frida upstream bug [#2878](https://github.com/frida/frida/issues/2878) — `invalid instruction` in `_patchCode`. Not a phantom-frida issue.
-- **D-Bus interface names** (`re.frida.HostSession17` etc.): Intentionally NOT renamed in base mode. These are the client-server protocol — renaming server-side would break standard `frida` client. Not a detection vector (only visible over USB/TCP channel).
-
-## Credits
+## 致谢
 
 - [Frida](https://frida.re/) by Ole Andre Ravnas
-- [ajeossida](https://github.com/hackcatml/ajeossida) by hackcatml — original stealth Frida concept
-- Detection vector research from the Android security community
+- [ajeossida](https://github.com/hackcatml/ajeossida) by hackcatml — 原始反检测 Frida 概念
 
 ## License
 
