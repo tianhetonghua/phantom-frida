@@ -145,7 +145,7 @@ def ensure_ndk(work_dir: Path) -> Path:
         run(f"curl -L -o {ndk_zip} {NDK_URL}", cwd=str(work_dir))
 
     log("Extracting NDK...", "STEP")
-    run(f"unzip -q {ndk_zip}", cwd=str(work_dir))
+    run(f"unzip -q -o {ndk_zip}", cwd=str(work_dir))
 
     if ndk_dir.exists():
         log(f"NDK ready at {ndk_dir}", "OK")

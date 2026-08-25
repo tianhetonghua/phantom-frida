@@ -136,7 +136,7 @@ ask_bool    EXTENDED       "Extended anti-detection patches?"          "$EXTENDE
 ask_bool    TEMP_FIXES     "Stability fixes (perfetto, cloak detach)?" "$TEMP_FIXES"
 
 # Normalise
-CUSTOM_NAME="${CUSTOM_NAME,,}"   # lowercase
+CUSTOM_NAME="$(echo "$CUSTOM_NAME" | tr '[:upper:]' '[:lower:]')"
 
 # Validate arch list
 IFS=',' read -ra ARCH_LIST <<< "$BUILD_ARCH"
@@ -196,7 +196,7 @@ if [[ "$PLATFORM" == "Darwin" || "$USE_DOCKER" -eq 1 ]]; then
 
   SETUP_CMDS="apt-get update -qq && apt-get install -y -qq build-essential curl git python3 unzip > /dev/null 2>&1"
 
-  docker run --rm -it \
+  docker run --rm -i \
     "${DOCKER_ENV[@]}" \
     -v "$SCRIPT_DIR:/workspace:ro" \
     -v "$BUILD_CACHE:/cache" \
