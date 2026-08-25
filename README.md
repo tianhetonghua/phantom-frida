@@ -27,16 +27,34 @@ The **Weekly Stealth Build** workflow runs every Sunday:
 - Builds with `--extended` for maximum stealth
 - Creates a GitHub Release with binary + `build-info.json`
 
+### Local build (macOS via Docker)
+
+```bash
+# 前置(一次性):
+brew install colima docker
+colima start --dns 2235.5.5          # 中国网络需要
+docker pull docker.m.daocloud.io/library/ubuntu:22.04
+docker tag docker.m.daocloud.io/library/ubuntu:22.04 ubuntu:22.04
+
+# 编译:
+./build-local.sh -v 17.9.10 -n meituan -a android-arm64 -p 6666 --yes
+
+# 非交互 + 自定义:
+FRIDA_VERSION=17.9.10 CUSTOM_NAME=myserver CUSTOM_PORT=27142 ./build-local.sh --yes
+```
+
+`build-local.sh` 自动检测 macOS → Docker (ubuntu:22.04) → build.py。NDK + frida 源码缓存在 `.docker-build-cache/`(首次 ~1.5GB NDK 下载,后续 cache hit)。
+
 ### Local build (WSL Ubuntu)
 
 ```bash
-python3 build.py --version 17.7.2
+python3 build.py --version 17.9.10
 
 # Full options:
-python3 build.py --version 17.7.2 --name myserver --port 27142 --extended --verify
+python3 build.py --version 17.9.10 --name myserver --port 27142 --extended --verify
 
 # Patch only (inspect changes without compiling):
-python3 build.py --version 17.7.2 --skip-build
+python3 build.py --version 17.9.10 --skip-build
 ```
 
 ### WSL helper script
@@ -45,7 +63,7 @@ python3 build.py --version 17.7.2 --skip-build
 wsl -d Ubuntu bash build-wsl.sh
 
 # With options:
-FRIDA_VERSION=17.7.2 CUSTOM_NAME=myserver CUSTOM_PORT=27142 EXTENDED=1 \
+FRIDA_VERSION=17.9.10 CUSTOM_NAME=myserver CUSTOM_PORT=27142 EXTENDED=1 \
   wsl -d Ubuntu bash build-wsl.sh
 ```
 
@@ -104,6 +122,17 @@ frida -H 127.0.0.1:27142 -f com.example.app
 
 Each weekly release includes a `build-info.json` with the name, port, version, and architecture.
 
+## XOM Fix (Android 10 / kernel 4.9 / SELinux Enforcing)
+
+On devices with true execute-only memory enforcement (e.g. MI 8 SE / kernel 4.9 / SELinux Enforcing), the zygote's libstagefright `.text` page is mapped `--xp` (execute-only, no read). The zymbiote payload's self-read of its `ZymbioteContext` struct faults with `SIGSEGV SEGV_ACCERR`.
+
+**Fix:** `frida_soften_zygote_page()` in `linjector-glue.c` — transient ptrace on the zygote (after writing payload+GOT, before SIGCONT in `inject_zymbiote`) to mprotect the payload page `--xp → RX`. Forked children inherit RX → original zymbiote self-read works.
+
+- Only on `--xp` pages (`needs_softening = !m.readable`; `r-x` pages like MI 8 Lite are skipped, no ptrace).
+- Skips non-aarch64 (32-bit zygote).
+- `TracerPid` returns to 0 after detach. App process is never ptraced.
+- `zymbiote.c` is **unchanged** (original zymbiote, no trampoline / `/proc/self/mem`).
+
 ## Build Phases
 
 1. **Source patches**: Global string replacement across the entire Frida source tree. Renames all `frida-agent`, `frida-helper`, `frida-server`, `re.frida.*` references. Rebuilds Android helper DEX with renamed Java package.
@@ -120,6 +149,7 @@ Each weekly release includes a `build-info.json` with the name, port, version, a
 build.py                Main build script (clone, patch, compile, collect)
 patches.py              All patch definitions (87 patches + 17 rollbacks)
 namegen.py              Random name/port generator for stealth builds
+build-local.sh           Local build (macOS Docker / Linux native)
 build-wsl.sh            WSL helper script
 test_comprehensive.js   Anti-detection + Java bridge verification script
 .github/workflows/
@@ -129,6 +159,11 @@ test_comprehensive.js   Anti-detection + Java bridge verification script
 
 ## Requirements
 
+**GitHub Actions (recommended):** No local setup needed.
+
+**Local build (macOS):** Docker (Colima) + `colima start --dns 2235.5.5` (China network).
+
+**Local build (Linux/WSL):**
 - Ubuntu 22.04+ (WSL works)
 - Python 3.10+
 - Git, curl, unzip, make
@@ -139,7 +174,8 @@ test_comprehensive.js   Anti-detection + Java bridge verification script
 
 | Frida | Status |
 |-------|--------|
-| 17.x | Fully verified against source |
+| 17.9.10 | Fully verified + XOM fix |
+| 17.x | Compatible (auto-detects API differences) |
 | 16.x | Compatible (auto-detects API differences) |
 
 ## Tested Apps
