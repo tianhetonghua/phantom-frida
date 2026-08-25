@@ -196,7 +196,7 @@ if [[ "$PLATFORM" == "Darwin" || "$USE_DOCKER" -eq 1 ]]; then
 
   SETUP_CMDS="apt-get update -qq && apt-get install -y -qq build-essential curl git python3 unzip default-jdk > /dev/null 2>&1"
 
-  docker run --rm -i \
+  docker run --rm -i --platform linux/amd64 \
     "${DOCKER_ENV[@]}" \
     -v "$SCRIPT_DIR:/workspace:ro" \
     -v "$BUILD_CACHE:/cache" \
