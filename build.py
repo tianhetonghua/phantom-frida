@@ -405,6 +405,7 @@ def apply_page_patch(frida_dir: Path):
     log("my_page.patch applied", "OK")
 
 
+
 def apply_source_patches(frida_dir: Path, custom_name: str):
     """Apply global recursive string replacements across the source tree."""
     log("=" * 60, "HEADER")
