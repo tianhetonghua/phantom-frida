@@ -5,3 +5,7 @@ debug/
 __pycache__/
 *.pyc
 .DS_Store
+
+# build by-products
+build.log
+.docker-build-cache/
