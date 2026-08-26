@@ -506,6 +506,69 @@ def apply_targeted_patches(frida_dir: Path, custom_name: str, frida_major: int):
     log("Targeted patches complete", "OK")
 
 
+def apply_ndk29_fstream_patch(frida_dir: Path):
+    """Make frida's libc++ <fstream> overlay patch tolerate NDK r29+.
+
+    Frida's releng patches the NDK <fstream> header so 32-bit Android
+    API<24 uses fseek/ftell instead of the broken fseeko/ftello. The
+    expected inline ``return fseek(__file, ...)`` pattern was removed in
+    newer libc++ (NDK r29+), which restructured fstream to gate the two
+    via the _LIBCPP_HAS_NO_OFF_T_FUNCTIONS macro (defined for NEWLIB/
+    MSVCRT). Without this, the build dies at the compat subproject with
+    "Failed to patch libc++ fstream header; expected patterns not found".
+
+    We extend the macro's condition with the same 32-bit-Android fallback
+    so the seek behaviour is preserved, while keeping the legacy branch
+    pattern for older NDKs. Idempotent.
+    """
+    env_android = frida_dir / "releng" / "env_android.py"
+    if not env_android.exists():
+        log("  env_android.py not found, skipping NDK r29 fstream patch", "WARN")
+        return
+
+    old = (
+        "    result = header.replace(old_fseek, new_fseek)\n"
+        "    result = result.replace(old_ftell, new_ftell)\n"
+        "\n"
+        "    if result == header:\n"
+        "        raise ValueError(\"Failed to patch libc++ fstream header; expected patterns not found\")\n"
+        "\n"
+        "    return result"
+    )
+
+    new = (
+        "    result = header.replace(old_fseek, new_fseek)\n"
+        "    result = result.replace(old_ftell, new_ftell)\n"
+        "\n"
+        "    if result != header:\n"
+        "        return result\n"
+        "\n"
+        "    # Newer libc++ (NDK r29+) restructured fstream to gate fseek/fseeko\n"
+        "    # via the _LIBCPP_HAS_NO_OFF_T_FUNCTIONS macro (defined for NEWLIB/\n"
+        "    # MSVCRT). Extend that macro's condition so 32-bit Android API<24\n"
+        "    # also uses fseek/ftell, preserving the legacy branch semantics.\n"
+        "    old_macro = \"\"\"#if defined(_LIBCPP_MSVCRT) || defined(_NEWLIB_VERSION)\n"
+        "#  define _LIBCPP_HAS_NO_OFF_T_FUNCTIONS\n"
+        "#endif\"\"\"\n"
+        "\n"
+        "    new_macro = \"\"\"#if defined(_LIBCPP_MSVCRT) || defined(_NEWLIB_VERSION) || (defined(__ANDROID__) && __SIZEOF_POINTER__ == 4 && __ANDROID_API__ < 24)\n"
+        "#  define _LIBCPP_HAS_NO_OFF_T_FUNCTIONS\n"
+        "#endif\"\"\"\n"
+        "\n"
+        "    result = header.replace(old_macro, new_macro)\n"
+        "    if result == header:\n"
+        "        raise ValueError(\"Failed to patch libc++ fstream header; expected patterns not found\")\n"
+        "\n"
+        "    return result"
+    )
+
+    count = replace_in_file(env_android, old, new)
+    if count:
+        log("  env_android.py: NDK r29 fstream compat patch applied", "OK")
+    else:
+        log("  env_android.py: NDK r29 fstream patch already present (skipped)", "OK")
+
+
 def apply_extended_patches(frida_dir: Path, custom_name: str, port: int | None):
     """Apply extended anti-detection patches beyond ajeossida."""
     log("=" * 60, "HEADER")
@@ -723,10 +786,14 @@ def strip_binary(binary_path: Path, ndk_path: Path, arch: str):
     intermediate), which happens on x86/x86_64 where post_process.py places
     the final artifact at a different path that find_artifact misses.
     """
-    # NDK r23+: toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
-    strip_bin = ndk_path / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin" / "llvm-strip"
-    if not strip_bin.exists():
-        log(f"    llvm-strip not found at {strip_bin}, skipping strip", "WARN")
+    # NDK r23+: toolchains/llvm/prebuilt/<host>/bin/llvm-strip
+    # The host tag is darwin-x86_64 on macOS, linux-x86_64 on Linux — discover
+    # it rather than hardcoding, so stripping works on either host OS.
+    prebuilt_dir = ndk_path / "toolchains" / "llvm" / "prebuilt"
+    matches = list(prebuilt_dir.glob("*/bin/llvm-strip"))
+    strip_bin = matches[0] if matches else None
+    if strip_bin is None or not strip_bin.exists():
+        log(f"    llvm-strip not found under {prebuilt_dir}, skipping strip", "WARN")
         return
 
     flag = "--strip-unneeded" if binary_path.suffix == ".so" else "--strip-all"
@@ -967,6 +1034,9 @@ Detection vectors covered:
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
 
+    # Step 3.1: NDK r29 libc++ <fstream> compat (frida releng vs newer NDK)
+    apply_ndk29_fstream_patch(frida_dir)
+
     # Step 3.5: Extended patches
     if args.extended:
         apply_extended_patches(frida_dir, custom_name, args.port)
@@ -993,6 +1063,17 @@ Detection vectors covered:
         log("=" * 60, "HEADER")
         log(f"Building for {arch}", "STEP")
         log("=" * 60, "HEADER")
+
+        # Reset the agent_main symbol in SOURCE back to 'frida' before
+        # configuring this arch. A prior arch's apply_post_build_patches
+        # persisted the {custom_name}_agent_main rename in source files
+        # (include_build=True); without this reset, the next arch's first
+        # build mismatches the freshly Vala-generated frida_agent_main
+        # declaration (meituan call vs frida decl -> compile error).
+        reset = replace_in_tree(frida_dir, f"{custom_name}_agent_main",
+                                 "frida_agent_main", include_build=False)
+        if reset:
+            log(f"  Reset {custom_name}_agent_main -> frida_agent_main in source ({reset})", "OK")
 
         # Configure
         configure_arch(frida_dir, arch, ndk_path)

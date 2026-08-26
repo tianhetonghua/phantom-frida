@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build-local.sh — Local build script mirroring the GitHub Actions workflow.
 #
-# Supports Linux (native / WSL / Docker) and macOS (via Docker).
+# Supports Linux (native / WSL / Docker) and macOS (native, or Docker via --docker).
 #
 # Usage:
 #   ./build-local.sh                         # interactive prompts
@@ -66,7 +66,7 @@ Usage: $(basename "$0") [OPTIONS]
       --skip-clone          Reuse existing source in work-dir (reset to clean state)
       --skip-build          Apply patches only, skip compilation
       --no-verify           Skip post-build 'frida' string scan
-      --docker              Force Docker build (default: auto-detect on macOS)
+      --docker              Force Docker build (macOS now builds natively by default)
   -y, --yes                 Non-interactive, use defaults / env vars
   -h, --help                Show this help
 
@@ -163,8 +163,8 @@ echo ""
 # ── Platform check ────────────────────────────────────────────────────────────
 PLATFORM="$(uname -s)"
 
-if [[ "$PLATFORM" == "Darwin" || "$USE_DOCKER" -eq 1 ]]; then
-  # ── Docker path (macOS or forced) ──────────────────────────────────────────
+if [[ "$USE_DOCKER" -eq 1 ]]; then
+  # ── Docker path (forced via --docker) ───────────────────────────────────────
   step "Running via Docker (Ubuntu 22.04)"
   command -v docker &>/dev/null || die "Docker not found. Install Docker Desktop first."
 
@@ -206,13 +206,20 @@ if [[ "$PLATFORM" == "Darwin" || "$USE_DOCKER" -eq 1 ]]; then
     bash -c "$SETUP_CMDS && $INNER_CMD"
 
 else
-  # ── Native Linux path ───────────────────────────────────────────────────────
-  [[ "$PLATFORM" != "Linux" ]] && die "Unsupported platform: $PLATFORM. Use --docker on non-Linux."
+  # ── Native path (Linux or macOS) ────────────────────────────────────────────
+  [[ "$PLATFORM" != "Linux" && "$PLATFORM" != "Darwin" ]] && \
+    die "Unsupported platform: $PLATFORM. Use --docker."
 
   step "System info"
-  echo "  CPUs : $(nproc)"
-  echo "  RAM  : $(free -h | awk '/^Mem/{print $2}')"
-  echo "  Disk : $(df -h "$SCRIPT_DIR" | awk 'NR==2{print $4}') free in project dir"
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    echo "  CPUs : $(sysctl -n hw.logicalcpu)"
+    echo "  RAM  : $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+    echo "  Disk : $(df -h "$SCRIPT_DIR" | awk 'NR==2{print $4}') free in project dir"
+  else
+    echo "  CPUs : $(nproc)"
+    echo "  RAM  : $(free -h | awk '/^Mem/{print $2}')"
+    echo "  Disk : $(df -h "$SCRIPT_DIR" | awk 'NR==2{print $4}') free in project dir"
+  fi
   python3 --version
   git --version
 
@@ -243,15 +250,33 @@ else
 
   # ── NDK (mirrors "Cache NDK" + "Download NDK" steps) ─────────────────────
   NDK_VER="r29"
-  NDK_DIR="$WORK_DIR/android-ndk-$NDK_VER"
-  NDK_ZIP="$WORK_DIR/android-ndk-$NDK_VER-linux.zip"
-  NDK_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip"
 
   if [[ -n "$NDK_PATH" ]]; then
     [[ -d "$NDK_PATH" ]] || die "NDK path not found: $NDK_PATH"
     NDK_DIR="$NDK_PATH"
     ok "Using provided NDK: $NDK_DIR"
+  elif [[ "$PLATFORM" == "Darwin" ]]; then
+    # macOS: prefer the Android Studio SDK NDK (darwin-x86_64 prebuilt).
+    # Pick the newest complete install — skips stub ".installer" sidecars.
+    SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+    NDK_DIR=""
+    if [[ -d "$SDK_ROOT/ndk" ]]; then
+      for v in $(ls -1 "$SDK_ROOT/ndk" 2>/dev/null | sort -r); do
+        cand="$SDK_ROOT/ndk/$v"
+        if [[ -d "$cand/toolchains/llvm/prebuilt/darwin-x86_64" ]]; then
+          NDK_DIR="$cand"
+          break
+        fi
+      done
+    fi
+    [[ -n "$NDK_DIR" ]] || \
+      die "No usable NDK under $SDK_ROOT/ndk. Install one via Android Studio SDK Manager, or pass --ndk-path."
+    ok "Using macOS SDK NDK: $NDK_DIR"
   else
+    # Linux: download + extract NDK r29
+    NDK_DIR="$WORK_DIR/android-ndk-$NDK_VER"
+    NDK_ZIP="$WORK_DIR/android-ndk-$NDK_VER-linux.zip"
+    NDK_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip"
     step "NDK $NDK_VER"
     mkdir -p "$WORK_DIR"
     if [[ -d "$NDK_DIR" ]]; then
