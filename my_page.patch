@@ -1,0 +1,251 @@
+diff --git a/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c b/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
+index b411372..b56d71f 100644
+--- a/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
++++ b/subprojects/frida-gum/bindings/gumjs/gumquickmemory.c
+@@ -360,7 +360,10 @@ GUMJS_DEFINE_FUNCTION (gumjs_memory_check_code_pointer)
+   ptr = GSIZE_TO_POINTER (GPOINTER_TO_SIZE (ptr) & ~1);
+ #endif
+ 
+-  gum_ensure_code_readable (ptr, 1);
++  gpointer start_address = ptr;
++  gsize realsize = gum_get_memory_region_size(&start_address);
++  gum_try_mprotect (start_address, realsize, GUM_PAGE_RWX);
++  //gum_ensure_code_readable (ptr, 1);
+ 
+   if (gum_exceptor_try (exceptor, &scope))
+   {
+diff --git a/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c b/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
+index 73ce53e..c68ae80 100644
+--- a/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
++++ b/subprojects/frida-gum/gum/backend-linux/gummemory-linux.c
+@@ -23,6 +23,8 @@
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
+ #include <sys/uio.h>
++#include <android/log.h>
++#include <execinfo.h>
+ 
+ #if defined (HAVE_I386) && GLIB_SIZEOF_VOID_P == 4
+ # define GUM_SYS_PROCESS_VM_READV   347
+@@ -82,8 +84,8 @@ struct _GumProcmapQuery
+   guint64 build_id_addr;
+ };
+ 
+-static gboolean gum_memory_get_protection (gconstpointer address, gsize n,
+-    gsize * size, GumPageProtection * prot);
++// static gboolean gum_memory_get_protection (gconstpointer address, gsize n,
++//     gsize * size, GumPageProtection * prot);
+ static gboolean gum_memory_get_protection_using_procmap_query (
+     gconstpointer address, gboolean * success, gsize * size,
+     GumPageProtection * prot);
+@@ -406,6 +408,47 @@ gum_memory_write (gpointer address,
+   return success;
+ }
+ 
++gsize
++gum_get_memory_region_size (gpointer* address)
++{
++  static gpointer cache_start = NULL;
++  static gpointer cache_end = NULL;
++
++  gpointer real_address = *address;
++  // __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p",real_address);
++
++  if (real_address >= cache_start && real_address < cache_end)
++  {
++    *address = cache_start;
++    return (gsize) (cache_end - cache_start);
++  }
++
++  GumProcMapsIter iter;
++  const gchar * line;
++  gum_proc_maps_iter_init_for_self (&iter);
++  gsize result = 0;
++
++  while (gum_proc_maps_iter_next (&iter, &line))
++  {
++    gpointer start, end;
++    sscanf (line, "%p-%p", &start, &end);
++    if (start > real_address)
++      break;
++    else if (real_address >= start && real_address < end)
++    {
++      result = (gsize) (end - start);
++      *address = start;
++      // __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "Find Region %p-%p %p",start,end,result);
++      cache_start = start;
++      cache_end = end;
++      break;
++    }
++  }
++  gum_proc_maps_iter_destroy (&iter);
++  return result;
++}
++
++
+ gboolean
+ gum_memory_can_remap_writable (void)
+ {
+@@ -480,7 +523,7 @@ gum_clear_cache (gpointer address,
+   VALGRIND_DISCARD_TRANSLATIONS (address, size);
+ }
+ 
+-static gboolean
++gboolean
+ gum_memory_get_protection (gconstpointer address,
+                            gsize n,
+                            gsize * size,
+diff --git a/subprojects/frida-gum/gum/guminterceptor.c b/subprojects/frida-gum/gum/guminterceptor.c
+index ab42772..0f471e6 100644
+--- a/subprojects/frida-gum/gum/guminterceptor.c
++++ b/subprojects/frida-gum/gum/guminterceptor.c
+@@ -18,6 +18,7 @@
+ #include "gummetalarray.h"
+ #include "gumprocess-priv.h"
+ #include "gumtls.h"
++#include <android/log.h>
+ 
+ #include <string.h>
+ #ifdef HAVE_DARWIN
+@@ -2625,7 +2626,12 @@ gum_interceptor_resolve (GumInterceptor * self,
+     const gsize max_redirect_size = 16;
+     gpointer target;
+ 
+-    gum_ensure_code_readable (address, max_redirect_size);
++    
++    gpointer start_address = address;
++    gsize realsize = gum_get_memory_region_size(&start_address);
++    // __android_log_print(ANDROID_LOG_WARN, "PwnFRI", "gum_interceptor_resolve %p %p",start_address,realsize);
++    gum_try_mprotect (start_address, realsize, GUM_PAGE_RWX);
++    //gum_ensure_code_readable (address, max_redirect_size);
+ 
+     /* Avoid following grafted branches. */
+     if (gum_process_get_code_signing_policy () == GUM_CODE_SIGNING_REQUIRED)
+diff --git a/subprojects/frida-gum/gum/gummemory.c b/subprojects/frida-gum/gum/gummemory.c
+index 0964af6..30ef5cc 100644
+--- a/subprojects/frida-gum/gum/gummemory.c
++++ b/subprojects/frida-gum/gum/gummemory.c
+@@ -644,11 +644,24 @@ gum_memory_patch_code_pages_via_mprotect (GPtrArray * sorted_addresses,
+     }
+ #endif
+ 
++    gpointer last_vma_start = NULL;
++
+     for (i = 0; i != sorted_addresses->len; i++)
+     {
+       gpointer target_page = g_ptr_array_index (sorted_addresses, i);
++      gpointer start_address = target_page;
++      gsize realsize = gum_get_memory_region_size(&start_address);
++
++      if(realsize == 0){
++        realsize = page_size;
++      }
+ 
+-      if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RWX))
++      if (start_address == last_vma_start)
++        continue;
++      last_vma_start = start_address;
++
++
++      if (!gum_try_mprotect (start_address, realsize, GUM_PAGE_RWX))
+         return FALSE;
+     }
+ 
+@@ -703,11 +716,24 @@ gum_memory_patch_code_pages_via_mprotect (GPtrArray * sorted_addresses,
+         return FALSE;
+     }
+ 
++    last_vma_start = NULL;
++
+     for (i = 0; i != sorted_addresses->len; i++)
+     {
+       gpointer target_page = g_ptr_array_index (sorted_addresses, i);
++      gpointer start_address = target_page;
++      gsize realsize = gum_get_memory_region_size(&start_address);
+ 
+-      gum_clear_cache (target_page, page_size);
++      if(realsize == 0){
++        realsize = page_size;
++      }
++
++      if (start_address == last_vma_start)
++        continue;
++      last_vma_start = start_address;
++
++      gum_clear_cache (start_address, realsize);
++      // gum_try_mprotect (start_address, realsize, GUM_PAGE_RX);
+     }
+ 
+     return TRUE;
+@@ -776,11 +802,24 @@ gum_memory_patch_code_pages_via_mprotect (GPtrArray * sorted_addresses,
+   _gum_process_enumerate_threads (gum_maybe_suspend_thread, &suspend_op,
+       GUM_THREAD_FLAGS_NONE);
+ 
++  gpointer last_vma_start = NULL;
++
+   for (i = 0; i != sorted_addresses->len; i++)
+   {
+     gpointer target_page = g_ptr_array_index (sorted_addresses, i);
++    gpointer start_address = target_page;
++    gsize realsize = gum_get_memory_region_size(&start_address);
++
++    if(realsize == 0){
++      realsize = page_size;
++    }
++
++    if (start_address == last_vma_start)
++      continue;
++    last_vma_start = start_address;
++
+ 
+-    if (!gum_try_mprotect (target_page, page_size, GUM_PAGE_RW))
++    if (!gum_try_mprotect (start_address, realsize, GUM_PAGE_RW))
+     {
+       guint j;
+ 
+@@ -823,8 +862,25 @@ gum_memory_patch_code_pages_via_mprotect (GPtrArray * sorted_addresses,
+ 
+   if (result)
+   {
++    last_vma_start = NULL;
++
+     for (i = 0; i != sorted_addresses->len; i++)
+-      gum_clear_cache (g_ptr_array_index (sorted_addresses, i), page_size);
++    {
++      gpointer target_page = g_ptr_array_index (sorted_addresses, i);
++      gpointer start_address = target_page;
++      gsize realsize = gum_get_memory_region_size(&start_address);
++
++      if(realsize == 0){
++        realsize = page_size;
++      }
++
++      if (start_address == last_vma_start)
++        continue;
++      last_vma_start = start_address;
++
++      gum_clear_cache (start_address, realsize);
++      // gum_try_mprotect (start_address, realsize, GUM_PAGE_RX);
++    }
+   }
+ 
+   num_suspended = suspend_op.suspended_threads.length;
+diff --git a/subprojects/frida-gum/gum/gummemory.h b/subprojects/frida-gum/gum/gummemory.h
+index 3937557..93891cd 100644
+--- a/subprojects/frida-gum/gum/gummemory.h
++++ b/subprojects/frida-gum/gum/gummemory.h
+@@ -153,8 +153,14 @@ GUM_API GPtrArray * gum_match_pattern_get_tokens (
+ 
+ GUM_API void gum_ensure_code_readable (gconstpointer address, gsize size);
+ 
++GUM_API gboolean gum_memory_get_protection (gconstpointer address, gsize n,
++    gsize * size, GumPageProtection * prot);
++
+ GUM_API void gum_mprotect (gpointer address, gsize size,
+     GumPageProtection prot);
++
++GUM_API gsize gum_get_memory_region_size (gpointer* address);
++
+ GUM_API gboolean gum_try_mprotect (gpointer address, gsize size,
+     GumPageProtection prot);
+ 
