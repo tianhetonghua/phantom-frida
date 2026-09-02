@@ -20,6 +20,7 @@ Requirements:
 """
 
 import argparse
+import base64
 import gzip
 import hashlib
 import json
@@ -53,6 +54,18 @@ from patches import (
 )
 
 # --- Constants ---
+
+# Source repository. Default is our magicfrida fork: a tag-pinned mirror of
+# upstream frida with our modifications (XOM gum changes, ghostmem
+# experiments) committed in-tree — no patch application needed for those.
+# Set FRIDA_SOURCE_REPO to the official https://github.com/frida/frida.git to
+# build from pristine upstream (the builder's patch files then apply on top;
+# see apply_page_patch, which also skips anything the fork already vendors).
+FRIDA_SOURCE_REPO = os.environ.get("FRIDA_SOURCE_REPO", "https://github.com/tianhetonghua/magicfrida.git")
+# Optional read credentials for a private source fork. Passed to git via a
+# short-lived http.extraHeader (never embedded in the URL, so it cannot leak
+# into `git clone` error output or .git/config).
+FRIDA_SOURCE_PAT = os.environ.get("FRIDA_SOURCE_PAT", "")
 
 NDK_VERSION = "r29"
 NDK_REVISION = "29.0.14206865"
@@ -436,29 +449,120 @@ def ensure_ndk(work_dir: Path) -> Path:
 
 
 def clone_frida(version: str, work_dir: Path) -> Path:
-    """Clone Frida source at the specified version tag."""
+    """Clone the Frida source at the specified version tag.
+
+    The source repository comes from FRIDA_SOURCE_REPO: our magicfrida fork
+    by default (modifications — XOM gum changes, ghostmem experiments — are
+    committed in-tree there, tag-pinned per Frida version), the official
+    frida.git when explicitly set to it. FRIDA_SOURCE_PAT provides optional
+    read credentials for private forks.
+
+    Submodules always resolve to the upstream frida project, so
+    --recurse-submodules is kept. Note that shallow submodule fetches are
+    rejected by some hosts ("upload-pack: not our ref"), so --depth only
+    applies to the top-level clone.
+    """
     frida_dir = work_dir / "frida"
     if frida_dir.exists():
         log(f"Frida source already at {frida_dir}", "OK")
         return frida_dir
 
-    log(f"Cloning Frida {version} (with submodules)...", "STEP")
+    source_name = "official frida" if "github.com/frida/frida" in FRIDA_SOURCE_REPO else FRIDA_SOURCE_REPO
+    log(f"Cloning {version} from {source_name} (with submodules)...", "STEP")
+
+    auth_argv: list[str] = []
+    if FRIDA_SOURCE_PAT:
+        # Short-lived per-invocation auth header; keeps the token out of the
+        # remote URL, `git clone` error output, and .git/config.
+        basic = base64.b64encode(f"x-access-token:{FRIDA_SOURCE_PAT}".encode()).decode()
+        auth_argv = ["-c", f"http.extraHeader=Authorization: Basic {basic}"]
+
     run(
         [
             "git",
+            *auth_argv,
             "clone",
             "--recurse-submodules",
             "--branch",
             version,
             "--depth",
             "1",
-            "https://github.com/frida/frida.git",
+            FRIDA_SOURCE_REPO,
             frida_dir,
         ],
         cwd=work_dir,
     )
+
+    if FRIDA_SOURCE_PAT:
+        # Defensive: the -c override should not persist, but make sure no
+        # submodule step wrote the credential into any .git/config.
+        run(["git", "config", "--unset-all", "http.extraHeader"], cwd=frida_dir, check=False)
+        run(
+            ["git", "submodule", "foreach", "--recursive",
+             "git config --unset-all http.extraHeader || true"],
+            cwd=frida_dir,
+            check=False,
+        )
+
     log(f"Frida {version} cloned", "OK")
     return frida_dir
+
+
+def source_has_vendored_marker(frida_dir: Path) -> bool:
+    """Detect a source fork that already carries our frida-gum patch group.
+
+    gum_get_memory_region_size is the symbol the region-mprotect gum patch
+    introduces; if the freshly cloned source already defines it, the fork
+    vendored those changes and applying my_page.patch would fail (its hunks
+    no longer match). Used to compose the vendored-fork route (default,
+    magicfrida) with the official-source route.
+    """
+    gum_linux = frida_dir / "subprojects" / "frida-gum" / "gum" / "gummemory-linux.c"
+    try:
+        return "gum_get_memory_region_size" in gum_linux.read_text(
+            encoding="utf-8", errors="ignore"
+        )
+    except OSError:
+        return False
+
+
+def apply_page_patch(frida_dir: Path) -> None:
+    """Apply my_page.patch to the freshly cloned source tree, when needed.
+
+    my_page.patch carries the XOM-safe zygote-RX injection fix (Android 10,
+    kernel 4.9, SELinux enforcing) plus the frida-gum region-mprotect changes
+    that go with it. It must run before the Phase 1 identifier renames so its
+    hunk context still matches pristine source.
+
+    Skipped when the patch file is absent, or when the source fork already
+    vendors the gum changes (detected via gum_get_memory_region_size) —
+    magicfrida carries them in-tree, so on the default route nothing is
+    applied here; the frida-core softening hunks it does not vendor would
+    need a matching vendored tag instead.
+    """
+    if source_has_vendored_marker(frida_dir):
+        log("Source fork already vendors the gum patch group — skipping my_page.patch", "OK")
+        return
+    patch_file = Path(__file__).parent / "my_page.patch"
+    if not patch_file.exists():
+        log("my_page.patch not found, skipping page patch", "WARN")
+        return
+    log("Applying my_page.patch...", "STEP")
+    result = run(
+        ["git", "apply", "--whitespace=nowarn", str(patch_file)],
+        cwd=frida_dir,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        detail_lines = (result.stderr or "").strip().splitlines()
+        detail = " | ".join(detail_lines[:6]) or f"exit code {result.returncode}"
+        raise BuildError(
+            f"my_page.patch failed to apply: {detail}. Rework its hunks for "
+            "this Frida version, or remove the file to build without the "
+            "XOM injection fix."
+        )
+    log("my_page.patch applied", "OK")
 
 
 # ============================================================================
@@ -1243,17 +1347,38 @@ def apply_strict_wx_patch(frida_dir: Path, custom_name: str) -> None:
 
 
 def apply_port_patches(frida_dir: Path, port: int | None) -> None:
-    """Apply only the configured listening-port replacement."""
+    """Apply only the configured listening-port replacement.
+
+    Fails closed when the port's source of truth is present but the
+    replacement does not hit: the server would otherwise silently keep
+    listening on 27042 while the client assumes the requested port.
+    """
     if port is not None and port != 27042:
+        targeted_hit = False
+        saw_target = False
         port_patches = get_port_patches(port)
         for patch in port_patches:
             for fpath in patch["files"]:
                 full_path = frida_dir / fpath
                 if full_path.exists():
+                    saw_target = True
                     count = replace_in_file(full_path, patch["pattern"], patch["replacement"])
                     if count:
                         log(f"  Port: {patch['description']} in {Path(fpath).name} ({count})", "OK")
-        # Also do a global sweep for the port number in less obvious places
+                        targeted_hit = True
+                else:
+                    log(f"  Port: file not found: {fpath}", "WARN")
+        if saw_target and not targeted_hit:
+            raise BuildError(
+                "Port patch did not hit DEFAULT_CONTROL_PORT in "
+                "lib/base/socket.vala — the Frida source layout changed; "
+                "the constant's location must be re-verified before building."
+            )
+        if not saw_target:
+            log("  Port: socket.vala absent — relying on global sweep only", "WARN")
+        # Belt-and-suspenders: sweep any other literal "27042" left in
+        # frida-core (tests, duplicated constants). Must NOT be the only
+        # thing making the port change effective.
         count = replace_in_tree(frida_dir / "subprojects" / "frida-core", "27042", str(port))
         if count:
             log(f"  Port: global sweep found {count} more occurrences", "OK")
@@ -1504,10 +1629,14 @@ def apply_binary_patches(binary_path: Path, custom_name: str, extended: bool = F
 # ============================================================================
 
 
-def configure_arch(frida_dir: Path, arch: str, ndk_path: Path):
+def configure_arch(frida_dir: Path, arch: str, ndk_path: Path, debug_symbols: bool = False):
     log(f"Configuring for {arch}...", "STEP")
+    argv = ["./configure", f"--host={arch}"]
+    if debug_symbols:
+        argv.append("--enable-symbols")
+        log("  Debug symbols ENABLED (-Dstrip=false) — artifacts will not be stripped", "WARN")
     run(
-        ["./configure", f"--host={arch}"],
+        argv,
         cwd=frida_dir,
         env={"ANDROID_NDK_ROOT": str(ndk_path)},
     )
@@ -1854,6 +1983,13 @@ Transformations and verification boundaries:
         help="Harden Frida-owned persistent anonymous RWX mappings on Android",
     )
     parser.add_argument(
+        "--debug-symbols",
+        action="store_true",
+        help="Build with debug symbols (passes --enable-symbols to configure, "
+        "i.e. -Dstrip=false). Use for crash triage with addr2line/gdb; NOT "
+        "for release artifacts (bigger binaries, easier to fingerprint).",
+    )
+    parser.add_argument(
         "--work-dir", "-w", default=None, help="Working directory (default: ./build)"
     )
     parser.add_argument(
@@ -1921,6 +2057,9 @@ Transformations and verification boundaries:
             raise BuildError("--skip-clone requires existing source in work-dir")
         log(f"Using existing source at {frida_dir}", "OK")
 
+    # Step 2.5: Apply my_page.patch (XOM fixes) unless the fork vendors them
+    apply_page_patch(frida_dir)
+
     # Step 3: Source patches
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
@@ -1956,7 +2095,7 @@ Transformations and verification boundaries:
             log("=" * 60, "HEADER")
 
             # Configure
-            configure_arch(frida_dir, arch, ndk_path)
+            configure_arch(frida_dir, arch, ndk_path, debug_symbols=args.debug_symbols)
 
             # First build
             log("First build...", "STEP")

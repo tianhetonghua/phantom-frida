@@ -1,0 +1,248 @@
+name: Auto Stealth Build
+
+# Push-triggered auto build: clones our magicfrida fork (modifications
+# vendored in-tree), builds with a random name/port, publishes a Release.
+# The reusable .github/workflows/build.yml stays available for manual runs.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'build.py'
+      - 'patches.py'
+      - 'namegen.py'
+      - '*.patch'
+      - '.github/workflows/auto-build.yml'
+  workflow_dispatch:
+    inputs:
+      frida_version:
+        description: 'Frida version tag on magicfrida (empty = latest tag)'
+        required: false
+        default: ''
+      arch:
+        description: 'Target architecture(s)'
+        required: true
+        default: 'android-arm64'
+        type: choice
+        options:
+          - android-arm64
+          - android-arm
+          - android-arm64,android-arm
+      debug_symbols:
+        description: 'Build with debug symbols (crash triage only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out builder
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Java
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.13.1"
+
+      - name: Install system dependencies and Android SDK bits
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential curl git unzip
+          # Android SDK subset for the helper DEX rebuild (android.jar + d8)
+          sudo apt-get install --yes google-android-build-tools-installer 2>/dev/null || true
+          if ! command -v d8 >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/cmdtools.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip
+            unzip -q /tmp/cmdtools.zip -d "$HOME/android-sdk"
+            yes | "$HOME/android-sdk/cmdline-tools/bin/sdkmanager" \
+              --sdk_root="$HOME/android-sdk" \
+              "build-tools;36.1.0" "platforms;android-36" >/dev/null
+          fi
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/build-tools/36.1.0" >> "$GITHUB_PATH"
+
+      - name: Detect latest magicfrida tag
+        id: version
+        env:
+          INPUT_FRIDA_VERSION: ${{ inputs.frida_version }}
+          MAGICFRIDA_PAT: ${{ secrets.MAGICFRIDA_PAT }}
+        run: |
+          if [ -n "$INPUT_FRIDA_VERSION" ]; then
+            VERSION="$INPUT_FRIDA_VERSION"
+          else
+            if [ -n "$MAGICFRIDA_PAT" ]; then
+              AUTH=(-H "Authorization: Bearer ${MAGICFRIDA_PAT}")
+            else
+              AUTH=()
+            fi
+            VERSION=$(curl -s "${AUTH[@]}" \
+              https://api.github.com/repos/tianhetonghua/magicfrida/tags \
+              | python3 -c "import sys,json; tags=[t['name'] for t in json.load(sys.stdin) if t['name'][0].isdigit()]; print(tags[0])")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Frida version: $VERSION"
+
+      - name: Generate random name and port
+        id: random
+        run: |
+          NAME=$(python3 namegen.py --quiet)
+          PORT=$(python3 namegen.py --port-only --quiet)
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "Build name: $NAME, port: $PORT"
+
+      - name: Restore immutable NDK
+        id: ndk-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/android-ndk-r29
+          key: android-ndk-r29-linux-87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b
+
+      - name: Download and verify NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          archive="$RUNNER_TEMP/android-ndk-r29-linux.zip"
+          mkdir -p build
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$archive" \
+            https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          printf '%s  %s\n' \
+            87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b "$archive" | sha1sum --check -
+          unzip -q "$archive" -d build
+
+      - name: Cache magicfrida source
+        id: frida-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/frida
+          key: magicfrida-${{ steps.version.outputs.version }}-${{ github.run_number }}-source
+
+      - name: Clone magicfrida
+        if: steps.frida-cache.outputs.cache-hit != 'true'
+        env:
+          FRIDA_SOURCE_PAT: ${{ secrets.MAGICFRIDA_PAT }}
+          FRIDA_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # build.py's clone_frida honors FRIDA_SOURCE_REPO / FRIDA_SOURCE_PAT.
+          # Submodules are cloned in full (no --depth) because some submodule
+          # hosts reject shallow fetches of non-tip commits.
+          mkdir -p build
+          python3 -c "import sys, pathlib; sys.path.insert(0, '.'); import build; build.clone_frida('${FRIDA_VERSION}', pathlib.Path('build'))"
+
+      - name: Prepare fresh source from cache
+        if: steps.frida-cache.outputs.cache-hit == 'true'
+        run: |
+          cd build/frida
+          git checkout -- .
+          git submodule foreach --recursive 'git checkout -- . || true'
+          git clean -fdx || true
+          rm -rf build/
+
+      - name: Build
+        env:
+          FRIDA_SOURCE_PAT: ${{ secrets.MAGICFRIDA_PAT }}
+          FRIDA_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NAME: ${{ steps.random.outputs.name }}
+          BUILD_PORT: ${{ steps.random.outputs.port }}
+          BUILD_ARCH: ${{ inputs.arch || 'android-arm64' }}
+          DEBUG_SYMBOLS: ${{ inputs.debug_symbols }}
+        run: |
+          command=(
+            python3 build.py
+            --version "$FRIDA_VERSION"
+            --name "$BUILD_NAME"
+            --arch "$BUILD_ARCH"
+            --port "$BUILD_PORT"
+            --extended
+            --skip-clone
+            --ndk-path build/android-ndk-r29
+            --verify
+          )
+          if [[ "$DEBUG_SYMBOLS" == "true" ]]; then
+            command+=(--debug-symbols)
+          fi
+          printf 'Running:'
+          printf ' %q' "${command[@]}"
+          printf '\n'
+          "${command[@]}"
+
+      - name: Verify release assets
+        run: |
+          python3 -m json.tool output/build-info.json > /dev/null
+          cd output
+          sha256sum --check SHA256SUMS
+
+      - name: List artifacts
+        env:
+          BUILD_NAME: ${{ steps.random.outputs.name }}
+          BUILD_PORT: ${{ steps.random.outputs.port }}
+        run: |
+          echo "=== Build: $BUILD_NAME (port $BUILD_PORT) ==="
+          ls -lh output/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stealth-${{ steps.random.outputs.name }}-${{ steps.version.outputs.version }}
+          path: |
+            output/*.gz
+            output/build-info.json
+            output/SHA256SUMS
+          retention-days: 30
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRIDA_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NAME: ${{ steps.random.outputs.name }}
+          BUILD_PORT: ${{ steps.random.outputs.port }}
+          BUILD_ARCH: ${{ inputs.arch || 'android-arm64' }}
+          TRIGGER: ${{ github.event_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          TAG="v${FRIDA_VERSION}-$(date +%Y%m%d)-${GITHUB_SHA::7}"
+          TITLE="Stealth Build — $BUILD_NAME (Frida $FRIDA_VERSION)"
+          cat > /tmp/release.md <<RELEASE_EOF
+          ## Stealth Frida Server
+
+          | Parameter | Value |
+          |-----------|-------|
+          | Frida version | $FRIDA_VERSION |
+          | Custom name | \`$BUILD_NAME\` |
+          | Custom port | \`$BUILD_PORT\` |
+          | Architecture | \`$BUILD_ARCH\` |
+          | Extended patches | Yes |
+          | Triggered by | $TRIGGER (\`$COMMIT\`) |
+
+          ### Deploy
+          \`\`\`bash
+          gunzip $BUILD_NAME-server-*.gz
+          adb push $BUILD_NAME-server-* /data/local/tmp/$BUILD_NAME-server
+          adb shell chmod 755 /data/local/tmp/$BUILD_NAME-server
+          adb shell /data/local/tmp/$BUILD_NAME-server &
+          frida -H 127.0.0.1:$BUILD_PORT -f <package>
+          \`\`\`
+          RELEASE_EOF
+          gh release create "$TAG" output/*.gz output/build-info.json output/SHA256SUMS \
+            --title "$TITLE" --notes-file /tmp/release.md --latest

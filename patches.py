@@ -481,23 +481,35 @@ def get_port_patches(new_port: int = 27142) -> list[dict]:
     Change Frida's default listening port from 27042.
 
     Detection: many apps scan localhost:27042 to detect Frida.
-    Port 27042 = 0x69A2, appears as little-endian 0xA269 in binaries.
+
+    IMPORTANT (bug history): the upstream version of this patch targets
+    "lib/interfaces/session.vala" (doesn't exist in 17.x),
+    "src/droidy/droidy-client.vala" and "server/server.vala" (neither
+    actually contains the literal "27042" in 17.x). All three targeted
+    replacements silently no-op, so the *only* thing that actually changes
+    the real listening port is the implicit global "27042" sweep in the
+    extended patches — fragile, and easy to break if the upstream source
+    ever gains an unrelated "27042" occurrence.
+
+    The single source of truth for the default control port is the
+    DEFAULT_CONTROL_PORT constant in lib/base/socket.vala — every listener
+    (server.vala's EndpointParameters) and every client-side default
+    (droidy-host-session.vala's -U mode, fruity-host-session.vala) derives
+    from that one constant. Patch it explicitly so the port change is
+    verified instead of relying on the implicit sweep.
 
     Args:
-        new_port: New port number (default 27142, must be same byte-length)
+        new_port: New port number (default 27142)
     """
     return [
-        # Source-level: constant definition
         {
             "type": "source",
-            "pattern": "27042",
-            "replacement": str(new_port),
+            "pattern": "public const uint16 DEFAULT_CONTROL_PORT = 27042;",
+            "replacement": f"public const uint16 DEFAULT_CONTROL_PORT = {new_port};",
             "files": [
-                "subprojects/frida-core/lib/interfaces/session.vala",
-                "subprojects/frida-core/src/droidy/droidy-client.vala",
-                "subprojects/frida-core/server/server.vala",
+                "subprojects/frida-core/lib/base/socket.vala",
             ],
-            "description": f"Default port 27042 -> {new_port}",
+            "description": f"DEFAULT_CONTROL_PORT 27042 -> {new_port}",
         },
     ]
 

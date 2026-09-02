@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: false
+      debug_symbols:
+        description: Build with debug symbols for crash triage (not for release)
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       frida_version:
@@ -80,6 +85,11 @@ on:
         required: false
         type: boolean
         default: false
+      debug_symbols:
+        description: Build with debug symbols for crash triage (not for release)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -97,7 +107,9 @@ jobs:
       ARCHITECTURES: ${{ inputs.arch }}
       CUSTOM_NAME: ${{ inputs.custom_name }}
       CUSTOM_PORT: ${{ inputs.port }}
+      DEBUG_SYMBOLS: ${{ inputs.debug_symbols }}
       EXTENDED_PATCHES: ${{ inputs.extended }}
+      FRIDA_SOURCE_PAT: ${{ secrets.MAGICFRIDA_PAT }}
       FRIDA_VERSION: ${{ inputs.frida_version }}
       NDK_ARCHIVE_SHA1: 87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b
       NDK_ARCHIVE_URL: https://dl.google.com/android/repository/android-ndk-r29-linux.zip
@@ -175,6 +187,9 @@ jobs:
           fi
           if [[ "$STRICT_WX" == "true" ]]; then
             command+=(--strict-wx)
+          fi
+          if [[ "$DEBUG_SYMBOLS" == "true" ]]; then
+            command+=(--debug-symbols)
           fi
 
           printf 'Running:'
