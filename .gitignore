@@ -15,3 +15,12 @@ node_modules/
 android-smoke-report.json
 .DS_Store
 .worktrees/
+
+# local build caches (build-local.sh + manual builds)
+.local-env/
+.ndk-cache/
+.backup-patches/
+.docker-build-cache/
+build-*/
+output-*/
+build.log
