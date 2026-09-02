@@ -249,3 +249,135 @@ index 3937557..93891cd 100644
  GUM_API gboolean gum_try_mprotect (gpointer address, gsize size,
      GumPageProtection prot);
  
+diff --git a/subprojects/frida-core/src/linux/linjector-glue.c b/subprojects/frida-core/src/linux/linjector-glue.c
+index 0a9cd0a..3c7f672 100644
+--- a/subprojects/frida-core/src/linux/linjector-glue.c
++++ b/subprojects/frida-core/src/linux/linjector-glue.c
+@@ -1,8 +1,70 @@
+ #include "frida-core.h"
++#include <stdio.h>
++#include <sys/ptrace.h>
++#include <sys/uio.h>
++#include <sys/wait.h>
++#include <sys/mman.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
+ 
+ GBytes *
+ _frida_agent_descriptor_clone_so (GBytes * so)
+ {
+-  /* TODO: update .so identity */
+   return g_bytes_ref (so);
+ }
++
++#ifdef __aarch64__
++int
++frida_soften_zygote_page (int pid, guint64 base, gsize page_size)
++{
++  struct regs { guint64 r[31], sp, pc, pstate; };
++  struct iovec iov;
++  struct regs orig, regs;
++  int st, mfd, ret = -1;
++  guint64 stub_addr = base + 0x800;
++  char mempath[64];
++  snprintf (mempath, sizeof (mempath), "/proc/%d/mem", pid);
++  mfd = open (mempath, O_RDWR);
++  if (mfd < 0) return -1;
++  {
++    guint32 stub[2] = { 0xd4000001, 0xd4200000 };
++    if (pwrite (mfd, stub, 8, (off_t) stub_addr) != 8) { close (mfd); return -1; }
++  }
++  close (mfd);
++  if (ptrace (PTRACE_ATTACH, pid, NULL, NULL) < 0) return -1;
++  waitpid (pid, &st, 0);
++  iov.iov_base = &orig;
++  iov.iov_len = sizeof (orig);
++  if (ptrace (PTRACE_GETREGSET, pid, (void *) 1, &iov) < 0) goto det;
++  if (iov.iov_len != sizeof (orig)) goto det;
++  regs = orig;
++  regs.r[8] = 226;
++  regs.r[0] = base;
++  regs.r[1] = page_size;
++  regs.r[2] = PROT_READ | PROT_EXEC;
++  regs.pc = stub_addr;
++  iov.iov_base = &regs;
++  iov.iov_len = sizeof (regs);
++  ptrace (PTRACE_SETREGSET, pid, (void *) 1, &iov);
++  {
++    int tries = 0;
++    do {
++      ptrace (PTRACE_CONT, pid, NULL, NULL);
++      waitpid (pid, &st, 0);
++    } while (WIFSTOPPED (st) && WSTOPSIG (st) == SIGSTOP && ++tries < 10);
++  }
++  iov.iov_base = &regs;
++  iov.iov_len = sizeof (regs);
++  if (ptrace (PTRACE_GETREGSET, pid, (void *) 1, &iov) == 0)
++    ret = (regs.r[0] == 0) ? 0 : -1;
++  iov.iov_base = &orig;
++  iov.iov_len = sizeof (orig);
++  ptrace (PTRACE_SETREGSET, pid, (void *) 1, &iov);
++det:
++  ptrace (PTRACE_DETACH, pid, NULL, NULL);
++  return ret;
++}
++#else
++int frida_soften_zygote_page (int pid, guint64 base, gsize page_size) { (void) pid; (void) base; (void) page_size; return 0; }
++#endif
+diff --git a/subprojects/frida-core/src/linux/linux-host-session.vala b/subprojects/frida-core/src/linux/linux-host-session.vala
+index aa7d26c..f8f7c37 100644
+--- a/subprojects/frida-core/src/linux/linux-host-session.vala
++++ b/subprojects/frida-core/src/linux/linux-host-session.vala
+@@ -1652,6 +1652,9 @@ namespace Frida {
+ 				error.message == "Unable to locate android.os.Process.setArgV0() slot; please file a bug";
+ 		}
+ 
++		[CCode (cname = "frida_soften_zygote_page")]
++		private static extern int soften_zygote_page (int pid, uint64 base, size_t page_size);
++
+ 		private async void inject_zymbiote (uint pid, Cancellable? cancellable) throws Error, IOError {
+ 			var prep = yield prepare_zymbiote_injection (pid, cancellable);
+ 
+@@ -1692,6 +1695,9 @@ namespace Frida {
+ 				}
+ 
+ 				zymbiote_patches[pid] = patches;
++
++				if (prep.needs_softening)
++					soften_zygote_page ((int) pid, prep.payload_base, Gum.query_page_size ());
+ 			} finally {
+ 				Posix.kill ((Posix.pid_t) pid, Posix.Signal.CONT);
+ 			}
+@@ -1711,6 +1717,7 @@ namespace Frida {
+ 
+ 			public Bytes payload;
+ 			public uint64 payload_base;
++			public bool needs_softening;
+ 			public string payload_path;
+ 			public uint64 payload_file_offset;
+ 		}
+@@ -1742,6 +1749,7 @@ namespace Frida {
+ 		private static ZymbiotePrepResult do_prepare_zymbiote_injection (uint pid, string server_name) throws Error, IOError {
+ 			uint64 payload_base = 0;
+ 			int payload_original_protection = 0;
++			bool needs_softening = false;
+ 			unowned string? payload_path = null;
+ 			uint64 payload_file_offset = 0;
+ 			unowned string? libc_path = null;
+@@ -1765,6 +1773,7 @@ namespace Frida {
+ 					payload_original_protection = Posix.PROT_READ | Posix.PROT_EXEC;
+ 					if (m.writable)
+ 						payload_original_protection |= Posix.PROT_WRITE;
++					needs_softening = !m.readable;
+ 					payload_path = path;
+ 					payload_file_offset = m.file_offset;
+ 				} else if (path.has_suffix ("/libc.so")) {
+@@ -1942,6 +1951,7 @@ namespace Frida {
+ 
+ 				payload = payload,
+ 				payload_base = payload_base,
++				needs_softening = needs_softening,
+ 				payload_path = payload_path,
+ 				payload_file_offset = payload_file_offset,
+ 			};
