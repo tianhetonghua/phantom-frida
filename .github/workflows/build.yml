@@ -51,15 +51,15 @@ on:
         type: string
         default: ajeossida
       arch:
-        description: Target architecture(s)
+        description: Target architecture (one per run)
         required: true
         type: choice
         default: android-arm64
         options:
           - android-arm64
           - android-arm
-          - android-arm64,android-arm
-          - android-arm64,android-arm,android-x86_64,android-x86
+          - android-x86_64
+          - android-x86
       port:
         description: Custom port; empty keeps the upstream default
         required: false
