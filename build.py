@@ -72,7 +72,7 @@ NDK_REVISION = "29.0.14206865"
 NDK_URL = f"https://dl.google.com/android/repository/android-ndk-{NDK_VERSION}-linux.zip"
 NDK_ARCHIVE_SHA1 = "87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b"
 ALL_ARCHS = ["android-arm64", "android-arm", "android-x86_64", "android-x86"]
-VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]{2,19}$")
 ANDROID_FALLBACK_ROOTS = (
     Path("/usr/local/lib/android/sdk"),
@@ -161,9 +161,11 @@ def run(
 
 
 def validate_version(value: str) -> str:
-    """Accept only concrete Frida release tags such as 17.16.4."""
+    """Accept a concrete Frida X.Y.Z release, optionally with a build suffix."""
     if VERSION_PATTERN.fullmatch(value) is None:
-        raise BuildError("Frida version must use the numeric X.Y.Z release format")
+        raise BuildError(
+            "Frida version must use numeric X.Y.Z format, optionally followed by a lowercase suffix"
+        )
     return value
 
 
