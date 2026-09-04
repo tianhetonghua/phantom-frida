@@ -91,6 +91,7 @@ jobs:
       extended: true
       temp_fixes: false
       strict_wx: true
+    secrets: inherit
 
   release:
     name: attest and release

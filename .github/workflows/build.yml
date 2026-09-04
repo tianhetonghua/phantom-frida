@@ -2,6 +2,10 @@ name: Build Custom Frida
 
 on:
   workflow_call:
+    secrets:
+      MAGICFRIDA_PAT:
+        description: Read-only token for the private tianhetonghua/magicfrida source repository
+        required: true
     inputs:
       frida_version:
         description: Frida version
@@ -121,6 +125,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Validate magicfrida source access
+        run: |
+          if [[ -z "$FRIDA_SOURCE_PAT" ]]; then
+            echo "::error::MAGICFRIDA_PAT is required to clone the private tianhetonghua/magicfrida repository. Configure it as an Actions secret with read-only Contents access."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

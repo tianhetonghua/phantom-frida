@@ -76,6 +76,8 @@ def test_fast_ci_has_expected_quality_gate() -> None:
 def test_reusable_build_is_read_only_and_fails_on_missing_artifacts() -> None:
     text = workflow_text("build.yml")
     assert "workflow_call:" in text
+    assert "MAGICFRIDA_PAT:" in text
+    assert "required: true" in text
     assert "permissions:\n  contents: read" in text
     assert "persist-credentials: false" in text
     assert "if-no-files-found: error" in text
@@ -102,8 +104,16 @@ def test_verified_release_builds_and_checks_strict_wx_artifacts() -> None:
     assert "STRICT_WX: ${{ inputs.strict_wx }}" in build
     assert "command+=(--strict-wx)" in build
     assert "strict_wx: true" in scheduled
+    assert "secrets: inherit" in scheduled
     assert '"strict_wx": True' in scheduled
     assert "- Frida-owned persistent anonymous RWX mappings: hardened" in scheduled
+
+
+def test_private_magicfrida_builds_fail_early_without_a_source_token() -> None:
+    for name in ("build.yml", "auto-build.yml"):
+        text = workflow_text(name)
+        assert "Validate magicfrida source access" in text
+        assert "MAGICFRIDA_PAT is required" in text
 
 
 def test_scheduled_release_is_pinned_to_the_device_verified_version() -> None:

@@ -82,6 +82,15 @@ jobs:
           echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
           echo "$HOME/android-sdk/build-tools/36.1.0" >> "$GITHUB_PATH"
 
+      - name: Validate magicfrida source access
+        env:
+          MAGICFRIDA_PAT: ${{ secrets.MAGICFRIDA_PAT }}
+        run: |
+          if [[ -z "$MAGICFRIDA_PAT" ]]; then
+            echo "::error::MAGICFRIDA_PAT is required to clone the private tianhetonghua/magicfrida repository. Configure it as an Actions secret with read-only Contents access."
+            exit 1
+          fi
+
       - name: Detect latest magicfrida tag
         id: version
         env:
